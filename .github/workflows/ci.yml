@@ -21,7 +21,7 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
       - run: make vet
       - run: make coverage
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           files: ./coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
