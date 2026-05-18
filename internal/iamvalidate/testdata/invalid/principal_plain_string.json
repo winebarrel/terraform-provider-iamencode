@@ -1,0 +1,5 @@
+{
+  "Statement": [
+    {"Effect": "Allow", "Principal": "foo", "Action": "sts:AssumeRole"}
+  ]
+}

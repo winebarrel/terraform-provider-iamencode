@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AWS IAM Policy Document",
+  "type": "object",
+  "required": ["Statement"],
+  "additionalProperties": false,
+  "properties": {
+    "Version": { "type": "string", "enum": ["2008-10-17", "2012-10-17"] },
+    "Id":      { "type": "string" },
+    "Statement": {
+      "oneOf": [
+        { "$ref": "#/definitions/statement" },
+        { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/statement" } }
+      ]
+    }
+  },
+  "definitions": {
+    "stringOrArray": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "minItems": 1, "items": { "type": "string" } }
+      ]
+    },
+    "principal": {
+      "oneOf": [
+        { "const": "*" },
+        {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "AWS":           { "$ref": "#/definitions/stringOrArray" },
+            "Service":       { "$ref": "#/definitions/stringOrArray" },
+            "Federated":     { "$ref": "#/definitions/stringOrArray" },
+            "CanonicalUser": { "$ref": "#/definitions/stringOrArray" }
+          }
+        }
+      ]
+    },
+    "conditionValue": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "array", "items": { "type": ["string", "boolean", "number"] } }
+      ]
+    },
+    "conditionOperator": {
+      "type": "string",
+      "enum": [
+        "StringEquals", "StringEqualsIfExists", "ForAllValues:StringEquals", "ForAllValues:StringEqualsIfExists", "ForAnyValue:StringEquals", "ForAnyValue:StringEqualsIfExists",
+        "StringNotEquals", "StringNotEqualsIfExists", "ForAllValues:StringNotEquals", "ForAllValues:StringNotEqualsIfExists", "ForAnyValue:StringNotEquals", "ForAnyValue:StringNotEqualsIfExists",
+        "StringEqualsIgnoreCase", "StringEqualsIgnoreCaseIfExists", "ForAllValues:StringEqualsIgnoreCase", "ForAllValues:StringEqualsIgnoreCaseIfExists", "ForAnyValue:StringEqualsIgnoreCase", "ForAnyValue:StringEqualsIgnoreCaseIfExists",
+        "StringNotEqualsIgnoreCase", "StringNotEqualsIgnoreCaseIfExists", "ForAllValues:StringNotEqualsIgnoreCase", "ForAllValues:StringNotEqualsIgnoreCaseIfExists", "ForAnyValue:StringNotEqualsIgnoreCase", "ForAnyValue:StringNotEqualsIgnoreCaseIfExists",
+        "StringLike", "StringLikeIfExists", "ForAllValues:StringLike", "ForAllValues:StringLikeIfExists", "ForAnyValue:StringLike", "ForAnyValue:StringLikeIfExists",
+        "StringNotLike", "StringNotLikeIfExists", "ForAllValues:StringNotLike", "ForAllValues:StringNotLikeIfExists", "ForAnyValue:StringNotLike", "ForAnyValue:StringNotLikeIfExists",
+        "NumericEquals", "NumericEqualsIfExists", "ForAllValues:NumericEquals", "ForAllValues:NumericEqualsIfExists", "ForAnyValue:NumericEquals", "ForAnyValue:NumericEqualsIfExists",
+        "NumericNotEquals", "NumericNotEqualsIfExists", "ForAllValues:NumericNotEquals", "ForAllValues:NumericNotEqualsIfExists", "ForAnyValue:NumericNotEquals", "ForAnyValue:NumericNotEqualsIfExists",
+        "NumericLessThan", "NumericLessThanIfExists", "ForAllValues:NumericLessThan", "ForAllValues:NumericLessThanIfExists", "ForAnyValue:NumericLessThan", "ForAnyValue:NumericLessThanIfExists",
+        "NumericLessThanEquals", "NumericLessThanEqualsIfExists", "ForAllValues:NumericLessThanEquals", "ForAllValues:NumericLessThanEqualsIfExists", "ForAnyValue:NumericLessThanEquals", "ForAnyValue:NumericLessThanEqualsIfExists",
+        "NumericGreaterThan", "NumericGreaterThanIfExists", "ForAllValues:NumericGreaterThan", "ForAllValues:NumericGreaterThanIfExists", "ForAnyValue:NumericGreaterThan", "ForAnyValue:NumericGreaterThanIfExists",
+        "NumericGreaterThanEquals", "NumericGreaterThanEqualsIfExists", "ForAllValues:NumericGreaterThanEquals", "ForAllValues:NumericGreaterThanEqualsIfExists", "ForAnyValue:NumericGreaterThanEquals", "ForAnyValue:NumericGreaterThanEqualsIfExists",
+        "DateEquals", "DateEqualsIfExists", "ForAllValues:DateEquals", "ForAllValues:DateEqualsIfExists", "ForAnyValue:DateEquals", "ForAnyValue:DateEqualsIfExists",
+        "DateNotEquals", "DateNotEqualsIfExists", "ForAllValues:DateNotEquals", "ForAllValues:DateNotEqualsIfExists", "ForAnyValue:DateNotEquals", "ForAnyValue:DateNotEqualsIfExists",
+        "DateLessThan", "DateLessThanIfExists", "ForAllValues:DateLessThan", "ForAllValues:DateLessThanIfExists", "ForAnyValue:DateLessThan", "ForAnyValue:DateLessThanIfExists",
+        "DateLessThanEquals", "DateLessThanEqualsIfExists", "ForAllValues:DateLessThanEquals", "ForAllValues:DateLessThanEqualsIfExists", "ForAnyValue:DateLessThanEquals", "ForAnyValue:DateLessThanEqualsIfExists",
+        "DateGreaterThan", "DateGreaterThanIfExists", "ForAllValues:DateGreaterThan", "ForAllValues:DateGreaterThanIfExists", "ForAnyValue:DateGreaterThan", "ForAnyValue:DateGreaterThanIfExists",
+        "DateGreaterThanEquals", "DateGreaterThanEqualsIfExists", "ForAllValues:DateGreaterThanEquals", "ForAllValues:DateGreaterThanEqualsIfExists", "ForAnyValue:DateGreaterThanEquals", "ForAnyValue:DateGreaterThanEqualsIfExists",
+        "Bool", "BoolIfExists", "ForAllValues:Bool", "ForAllValues:BoolIfExists", "ForAnyValue:Bool", "ForAnyValue:BoolIfExists",
+        "BinaryEquals", "BinaryEqualsIfExists", "ForAllValues:BinaryEquals", "ForAllValues:BinaryEqualsIfExists", "ForAnyValue:BinaryEquals", "ForAnyValue:BinaryEqualsIfExists",
+        "IpAddress", "IpAddressIfExists", "ForAllValues:IpAddress", "ForAllValues:IpAddressIfExists", "ForAnyValue:IpAddress", "ForAnyValue:IpAddressIfExists",
+        "NotIpAddress", "NotIpAddressIfExists", "ForAllValues:NotIpAddress", "ForAllValues:NotIpAddressIfExists", "ForAnyValue:NotIpAddress", "ForAnyValue:NotIpAddressIfExists",
+        "ArnEquals", "ArnEqualsIfExists", "ForAllValues:ArnEquals", "ForAllValues:ArnEqualsIfExists", "ForAnyValue:ArnEquals", "ForAnyValue:ArnEqualsIfExists",
+        "ArnLike", "ArnLikeIfExists", "ForAllValues:ArnLike", "ForAllValues:ArnLikeIfExists", "ForAnyValue:ArnLike", "ForAnyValue:ArnLikeIfExists",
+        "ArnNotEquals", "ArnNotEqualsIfExists", "ForAllValues:ArnNotEquals", "ForAllValues:ArnNotEqualsIfExists", "ForAnyValue:ArnNotEquals", "ForAnyValue:ArnNotEqualsIfExists",
+        "ArnNotLike", "ArnNotLikeIfExists", "ForAllValues:ArnNotLike", "ForAllValues:ArnNotLikeIfExists", "ForAnyValue:ArnNotLike", "ForAnyValue:ArnNotLikeIfExists",
+        "Null", "ForAllValues:Null", "ForAnyValue:Null"
+      ]
+    },
+    "condition": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/definitions/conditionOperator" },
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": { "$ref": "#/definitions/conditionValue" }
+      }
+    },
+    "statement": {
+      "type": "object",
+      "required": ["Effect"],
+      "additionalProperties": false,
+      "properties": {
+        "Sid":          { "type": "string", "pattern": "^[A-Za-z0-9]*$" },
+        "Effect":       { "type": "string", "enum": ["Allow", "Deny"] },
+        "Principal":    { "$ref": "#/definitions/principal" },
+        "NotPrincipal": { "$ref": "#/definitions/principal" },
+        "Action":       { "$ref": "#/definitions/stringOrArray" },
+        "NotAction":    { "$ref": "#/definitions/stringOrArray" },
+        "Resource":     { "$ref": "#/definitions/stringOrArray" },
+        "NotResource":  { "$ref": "#/definitions/stringOrArray" },
+        "Condition":    { "$ref": "#/definitions/condition" }
+      },
+      "allOf": [
+        { "not": { "required": ["Action", "NotAction"] } },
+        { "not": { "required": ["Resource", "NotResource"] } },
+        { "not": { "required": ["Principal", "NotPrincipal"] } }
+      ],
+      "anyOf": [
+        { "required": ["Action"] },
+        { "required": ["NotAction"] }
+      ]
+    }
+  }
+}

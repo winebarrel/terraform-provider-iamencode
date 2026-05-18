@@ -1,0 +1,5 @@
+{
+  "Statement": [
+    {"Effect": "Deny", "NotAction": "s3:DeleteObject", "Resource": "*"}
+  ]
+}

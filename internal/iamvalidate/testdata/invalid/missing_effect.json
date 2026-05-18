@@ -1,0 +1,5 @@
+{
+  "Statement": [
+    {"Action": "s3:*", "Resource": "*"}
+  ]
+}

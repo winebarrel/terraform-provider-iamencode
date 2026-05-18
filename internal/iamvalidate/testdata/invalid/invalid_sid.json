@@ -1,0 +1,10 @@
+{
+  "Statement": [
+    {
+      "Sid": "with-hyphen",
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": "*"
+    }
+  ]
+}

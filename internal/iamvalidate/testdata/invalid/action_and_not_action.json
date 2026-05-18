@@ -1,0 +1,10 @@
+{
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "NotAction": "s3:PutObject",
+      "Resource": "*"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "Statement": [
+    {"Effect": "Allow", "Action": "s3:*", "Resource": "*"}
+  ],
+  "Bogus": "no"
+}
