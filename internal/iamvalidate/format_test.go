@@ -40,6 +40,17 @@ func TestValidate_InvalidEffect_Snippet(t *testing.T) {
 	assert.True(t, errors.As(err, &ve))
 }
 
+func TestValidate_MissingVersion(t *testing.T) {
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Effect": "Allow", "Action": "s3:*", "Resource": "*"},
+		},
+	}
+	err := Validate(policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `(root): missing required property "Version"`)
+}
+
 func TestValidate_MissingRequired_PointsAtObject_AllLinesMarked(t *testing.T) {
 	policy := map[string]any{
 		"Statement": []any{

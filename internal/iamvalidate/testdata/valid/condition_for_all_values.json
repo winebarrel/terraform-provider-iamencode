@@ -1,11 +1,17 @@
 {
+  "Version": "2012-10-17",
   "Statement": [
     {
       "Effect": "Allow",
       "Action": "s3:*",
       "Resource": "*",
       "Condition": {
-        "ForAllValues:StringEquals": {"aws:TagKeys": ["env", "team"]}
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "env",
+            "team"
+          ]
+        }
       }
     }
   ]
