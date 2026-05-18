@@ -181,25 +181,6 @@ func TestSnippet_GutterWidthAlignment(t *testing.T) {
 	}
 }
 
-func TestValidate_BadPattern_HasCaret(t *testing.T) {
-	policy := map[string]any{
-		"Statement": []any{
-			map[string]any{
-				"Sid":      "has spaces",
-				"Effect":   "Allow",
-				"Action":   "s3:*",
-				"Resource": "*",
-			},
-		},
-	}
-	err := Validate(policy)
-	require.Error(t, err)
-
-	out := err.Error()
-	assert.Contains(t, out, `Statement[0].Sid: "has spaces" does not match pattern`)
-	assert.Contains(t, out, "^^^^^^^^^^^^") // 12 carets for `"has spaces"` (10 chars + 2 quotes)
-}
-
 func TestValidate_StringWithEmbeddedNewline_StillSingleLineInSnippet(t *testing.T) {
 	// A string value containing an embedded \n becomes a single line in the
 	// rendered JSON (Go's strconv.Quote escapes it). The caret should match
@@ -207,8 +188,7 @@ func TestValidate_StringWithEmbeddedNewline_StillSingleLineInSnippet(t *testing.
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
-				"Sid":      "line1\nline2",
-				"Effect":   "Allow",
+				"Effect":   "line1\nline2", // not "Allow"/"Deny" → enum violation
 				"Action":   "s3:*",
 				"Resource": "*",
 			},
@@ -218,7 +198,7 @@ func TestValidate_StringWithEmbeddedNewline_StillSingleLineInSnippet(t *testing.
 	require.Error(t, err)
 
 	out := err.Error()
-	assert.Contains(t, out, `Statement[0].Sid`)
+	assert.Contains(t, out, `Statement[0].Effect`)
 	// The rendered line shows the escape sequence, not a literal newline.
 	assert.Contains(t, out, `"line1\nline2"`)
 	// Caret length = len(`"line1\nline2"`) = 14.

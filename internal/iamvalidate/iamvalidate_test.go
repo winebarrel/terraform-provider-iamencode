@@ -46,3 +46,34 @@ func TestValidate_Valid(t *testing.T) {
 func TestValidate_Invalid(t *testing.T) {
 	runDir(t, "testdata/invalid", assert.Error)
 }
+
+// Duplicate non-empty Sids in the same document must be rejected, matching
+// aws_iam_policy_document. The error message names the duplicate Sid and
+// both statement indexes.
+func TestValidate_DuplicateSid_Message(t *testing.T) {
+	policy := map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []any{
+			map[string]any{"Sid": "Dup", "Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"},
+			map[string]any{"Effect": "Allow", "Action": "s3:ListBucket", "Resource": "*"},
+			map[string]any{"Sid": "Dup", "Effect": "Allow", "Action": "s3:PutObject", "Resource": "*"},
+		},
+	}
+	err := iamvalidate.Validate(policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `duplicate Sid "Dup"`)
+	assert.Contains(t, err.Error(), "Statement[2]")
+	assert.Contains(t, err.Error(), "Statement[0]")
+}
+
+// Empty Sids are exempt — they may appear on multiple statements.
+func TestValidate_EmptySid_AllowsDuplicates(t *testing.T) {
+	policy := map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []any{
+			map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"},
+			map[string]any{"Effect": "Allow", "Action": "s3:PutObject", "Resource": "*"},
+		},
+	}
+	assert.NoError(t, iamvalidate.Validate(policy))
+}
