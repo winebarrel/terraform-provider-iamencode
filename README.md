@@ -11,6 +11,7 @@ Terraform provider with a user-defined function that validates an IAM policy doc
 The schema is structural (no Action/Resource semantic validation), but it does catch:
 
 - Unknown / typo'd statement keys (`Actoin`, `Resourse`, ...)
+- Missing required top-level keys (`Version`, `Statement`)
 - Wrong `Effect` / `Version` values
 - Mixing `Action` and `NotAction` (also `Resource`/`NotResource`, `Principal`/`NotPrincipal`) in one statement
 - Missing both `Action` and `NotAction`

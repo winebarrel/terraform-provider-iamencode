@@ -60,6 +60,7 @@ func TestPolicyFunction_OK_TypeConversion(t *testing.T) {
 	okStep(t, `
 		output "test" {
 			value = provider::iamencode::policy({
+				Version = "2012-10-17"
 				Statement = [{
 					Effect    = "Allow"
 					Principal = { Service = ["lambda.amazonaws.com", "ec2.amazonaws.com"] }
@@ -73,7 +74,7 @@ func TestPolicyFunction_OK_TypeConversion(t *testing.T) {
 				}]
 			})
 		}
-	`, `{"Statement":[{"Action":["s3:GetObject","s3:PutObject"],"Condition":{"Bool":{"aws:SecureTransport":true},"NumericLessThan":{"s3:max-keys":100},"StringEquals":{"aws:PrincipalTag/env":["prod","staging"]}},"Effect":"Allow","Principal":{"Service":["lambda.amazonaws.com","ec2.amazonaws.com"]},"Resource":"*"}]}`)
+	`, `{"Statement":[{"Action":["s3:GetObject","s3:PutObject"],"Condition":{"Bool":{"aws:SecureTransport":true},"NumericLessThan":{"s3:max-keys":100},"StringEquals":{"aws:PrincipalTag/env":["prod","staging"]}},"Effect":"Allow","Principal":{"Service":["lambda.amazonaws.com","ec2.amazonaws.com"]},"Resource":"*"}],"Version":"2012-10-17"}`)
 }
 
 // Verifies a single Statement object (not array) round-trips correctly.
@@ -81,10 +82,11 @@ func TestPolicyFunction_OK_StatementAsObject(t *testing.T) {
 	okStep(t, `
 		output "test" {
 			value = provider::iamencode::policy({
+				Version = "2012-10-17"
 				Statement = { Effect = "Allow", Action = "s3:*", Resource = "*" }
 			})
 		}
-	`, `{"Statement":{"Action":"s3:*","Effect":"Allow","Resource":"*"}}`)
+	`, `{"Statement":{"Action":"s3:*","Effect":"Allow","Resource":"*"},"Version":"2012-10-17"}`)
 }
 
 // Verifies that a schema validation error surfaces through the function.
@@ -93,6 +95,7 @@ func TestPolicyFunction_Err_Validation(t *testing.T) {
 	errStep(t, `
 		output "test" {
 			value = provider::iamencode::policy({
+				Version = "2012-10-17"
 				Statement = [{ Effect = "Allow", Actoin = "s3:*", Resource = "*" }]
 			})
 		}
