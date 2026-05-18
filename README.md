@@ -24,7 +24,8 @@ The schema is structural (no Action/Resource semantic validation), but it does c
 terraform {
   required_providers {
     iamencode = {
-      source = "winebarrel/iamencode"
+      source  = "winebarrel/iamencode"
+      version = ">= 1.3.0"
     }
   }
 }
