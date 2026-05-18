@@ -92,7 +92,7 @@
       "required": ["Effect"],
       "additionalProperties": false,
       "properties": {
-        "Sid":          { "type": "string", "pattern": "^[A-Za-z0-9]*$" },
+        "Sid":          { "type": "string" },
         "Effect":       { "type": "string", "enum": ["Allow", "Deny"] },
         "Principal":    { "$ref": "#/definitions/principal" },
         "NotPrincipal": { "$ref": "#/definitions/principal" },

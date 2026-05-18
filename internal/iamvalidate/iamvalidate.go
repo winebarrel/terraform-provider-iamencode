@@ -40,12 +40,38 @@ func compile(data []byte) (*jsonschema.Schema, error) {
 // Validate checks whether v (already unmarshaled JSON, e.g. map[string]any)
 // conforms to the embedded IAM policy schema. On failure the returned error
 // renders a compile-error-style snippet pointing at the offending value.
+//
+// After schema validation, Validate also enforces uniqueness of non-empty
+// Sid values within a document (matching aws_iam_policy_document, which
+// errors on duplicate Sids). Empty / missing Sids are exempt.
 func Validate(v any) error {
-	err := compiled.Validate(v)
-	if err == nil {
-		return nil
+	if err := compiled.Validate(v); err != nil {
+		return &Error{inner: err.(*jsonschema.ValidationError), value: v}
 	}
-	return &Error{inner: err.(*jsonschema.ValidationError), value: v}
+	return checkDuplicateSids(v)
+}
+
+// checkDuplicateSids must only be called after schema validation succeeds —
+// the input shape (map at the root, statements being either an object or an
+// array of objects) is assumed.
+func checkDuplicateSids(v any) error {
+	obj := v.(map[string]any)
+	arr, ok := obj["Statement"].([]any)
+	if !ok {
+		return nil // single statement object — no possibility of duplicates
+	}
+	seen := make(map[string]int, len(arr))
+	for i, st := range arr {
+		sid, _ := st.(map[string]any)["Sid"].(string)
+		if sid == "" {
+			continue
+		}
+		if prev, exists := seen[sid]; exists {
+			return fmt.Errorf("duplicate Sid %q in Statement[%d] (previously in Statement[%d])", sid, i, prev)
+		}
+		seen[sid] = i
+	}
+	return nil
 }
 
 type Error struct {

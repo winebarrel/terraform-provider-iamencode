@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Enable IAM User Permissions",
+      "Effect": "Allow",
+      "Principal": { "AWS": "*" },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Allow access for Key Administrators",
+      "Effect": "Allow",
+      "Principal": { "AWS": "*" },
+      "Action": "kms:*",
+      "Resource": "*"
+    }
+  ]
+}
