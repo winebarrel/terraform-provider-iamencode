@@ -38,7 +38,20 @@ func compile(data []byte) (*jsonschema.Schema, error) {
 }
 
 // Validate checks whether v (already unmarshaled JSON, e.g. map[string]any)
-// conforms to the embedded IAM policy schema.
+// conforms to the embedded IAM policy schema. On failure the returned error
+// renders a compile-error-style snippet pointing at the offending value.
 func Validate(v any) error {
-	return compiled.Validate(v)
+	err := compiled.Validate(v)
+	if err == nil {
+		return nil
+	}
+	return &Error{inner: err.(*jsonschema.ValidationError), value: v}
 }
+
+type Error struct {
+	inner *jsonschema.ValidationError
+	value any
+}
+
+func (e *Error) Error() string { return formatError(e.value, e.inner) }
+func (e *Error) Unwrap() error { return e.inner }
