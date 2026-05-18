@@ -10,6 +10,10 @@ vet:
 test:
 	go test -v -count=1 ./...
 
+.PHONY: coverage
+coverage:
+	go test -count=1 -covermode=atomic -coverprofile=coverage.txt -coverpkg=./internal/... ./...
+
 .PHONY: lint
 lint:
 	golangci-lint run
