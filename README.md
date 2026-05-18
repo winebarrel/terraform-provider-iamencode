@@ -39,3 +39,33 @@ output "policy" {
   })
 }
 ```
+
+## Development
+
+### Requirements
+
+- Go (see `go.mod` for the required version)
+- Terraform
+
+### Build & test
+
+```sh
+make build      # go vet + go build
+make test       # run unit tests
+make coverage   # run tests with coverage (writes coverage.txt)
+make lint       # golangci-lint
+make docs       # regenerate docs under docs/
+```
+
+### Trying the provider locally
+
+The repo ships with `dev.tfrc.tpl`, which is rendered into `dev.tfrc` with a `dev_overrides` block pointing Terraform at the freshly built binary in this directory. The `tf-*` targets build the provider and run Terraform with `TF_CLI_CONFIG_FILE=dev.tfrc`:
+
+```sh
+cp iamencode.tf.sample iamencode.tf   # or write your own .tf
+make tf-plan
+make tf-apply
+make tf-console
+```
+
+When you are done, `make tf-clean` removes the built binary, `dev.tfrc`, and local Terraform state.
