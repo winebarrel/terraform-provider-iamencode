@@ -6,6 +6,8 @@
 
 Terraform provider with a user-defined function that validates an IAM policy document (passed as a Terraform object) against an embedded JSON Schema and returns it as a JSON string.
 
+![](https://github.com/user-attachments/assets/8248bba1-5be6-407c-8c19-8b60afecfa3e)
+
 The schema is structural (no Action/Resource semantic validation), but it does catch:
 
 - Unknown / typo'd statement keys (`Actoin`, `Resourse`, ...)
