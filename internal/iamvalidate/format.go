@@ -167,10 +167,10 @@ func kindMessage(k jsonschema.ErrorKind) string {
 	case *kind.Not:
 		return "value is not allowed here"
 	case *kind.OneOf:
-		if len(x.Subschemas) == 0 {
-			return "value does not match any allowed variant"
+		if len(x.Subschemas) >= 2 {
+			return fmt.Sprintf("value matched multiple allowed variants (%d and %d)", x.Subschemas[0], x.Subschemas[1])
 		}
-		return fmt.Sprintf("value matched multiple allowed variants (%d and %d)", x.Subschemas[0], x.Subschemas[1])
+		return "value does not match any allowed variant"
 	case *kind.AnyOf:
 		return "value does not match any allowed variant"
 	case *kind.AllOf:
