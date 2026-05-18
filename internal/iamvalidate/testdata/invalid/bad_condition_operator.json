@@ -1,0 +1,12 @@
+{
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": "*",
+      "Condition": {
+        "StringEquls": {"aws:PrincipalTag/env": "prod"}
+      }
+    }
+  ]
+}

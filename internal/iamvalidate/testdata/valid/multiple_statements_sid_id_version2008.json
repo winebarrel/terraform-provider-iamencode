@@ -1,0 +1,8 @@
+{
+  "Version": "2008-10-17",
+  "Id": "MyPolicyId",
+  "Statement": [
+    {"Sid": "ReadOnly",  "Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"},
+    {"Sid": "WriteOnly", "Effect": "Allow", "Action": "s3:PutObject", "Resource": "*"}
+  ]
+}

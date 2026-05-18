@@ -1,0 +1,10 @@
+{
+  "Statement": [
+    {
+      "Effect": "Deny",
+      "NotPrincipal": {"AWS": "arn:aws:iam::123456789012:root"},
+      "Action": "s3:*",
+      "Resource": "*"
+    }
+  ]
+}

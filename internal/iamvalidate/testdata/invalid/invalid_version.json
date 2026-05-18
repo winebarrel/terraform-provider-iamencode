@@ -1,0 +1,6 @@
+{
+  "Version": "2020-01-01",
+  "Statement": [
+    {"Effect": "Allow", "Action": "s3:*", "Resource": "*"}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:*",
+      "Resource": "*",
+      "NotResource": "arn:aws:s3:::secret/*"
+    }
+  ]
+}
