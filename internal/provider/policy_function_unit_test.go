@@ -17,12 +17,14 @@ import (
 // attrValueToNative — used to cover the default branch.
 type fakeAttrValue struct{}
 
-func (fakeAttrValue) Type(context.Context) attr.Type                          { return nil }
-func (fakeAttrValue) ToTerraformValue(context.Context) (tftypes.Value, error) { return tftypes.Value{}, nil }
-func (fakeAttrValue) Equal(attr.Value) bool                                   { return false }
-func (fakeAttrValue) IsNull() bool                                            { return false }
-func (fakeAttrValue) IsUnknown() bool                                         { return false }
-func (fakeAttrValue) String() string                                          { return "fake" }
+func (fakeAttrValue) Type(context.Context) attr.Type { return nil }
+func (fakeAttrValue) ToTerraformValue(context.Context) (tftypes.Value, error) {
+	return tftypes.Value{}, nil
+}
+func (fakeAttrValue) Equal(attr.Value) bool { return false }
+func (fakeAttrValue) IsNull() bool          { return false }
+func (fakeAttrValue) IsUnknown() bool       { return false }
+func (fakeAttrValue) String() string        { return "fake" }
 
 func TestAttrValueToNative(t *testing.T) {
 	tuple, diags := basetypes.NewTupleValue(

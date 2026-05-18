@@ -3,12 +3,6 @@ linters:
   enable:
     - misspell
   exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
     rules:
       - linters:
           - errcheck
@@ -16,5 +10,3 @@ linters:
 formatters:
   enable:
     - gofmt
-  exclusions:
-    generated: lax
