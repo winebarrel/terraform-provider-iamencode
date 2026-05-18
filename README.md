@@ -1,5 +1,7 @@
 # terraform-provider-iamencode
 
+[![codecov](https://codecov.io/gh/winebarrel/terraform-provider-iamencode/graph/badge.svg?token=Edpy75fnRI)](https://codecov.io/gh/winebarrel/terraform-provider-iamencode)
+
 Terraform provider with a user-defined function that validates an IAM policy document (passed as a Terraform object) against an embedded JSON Schema and returns it as a JSON string.
 
 The schema is structural (no Action/Resource semantic validation), but it does catch:
