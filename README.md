@@ -5,7 +5,7 @@
 [![codecov](https://codecov.io/gh/winebarrel/terraform-provider-iamencode/graph/badge.svg?token=Edpy75fnRI)](https://codecov.io/gh/winebarrel/terraform-provider-iamencode)
 [![AI Generated](https://img.shields.io/badge/AI%20Generated-Claude-orange?logo=anthropic)](https://claude.ai/claude-code)
 
-Terraform provider with a user-defined function that validates an IAM policy document (passed as a Terraform object) against an embedded JSON Schema and returns it as a JSON string.
+Terraform provider with a user-defined function that validates an IAM policy document (passed as a Terraform object) against an embedded [JSON Schema](internal/iamvalidate/schema.json) and returns it as a JSON string.
 
 ![](https://github.com/user-attachments/assets/8248bba1-5be6-407c-8c19-8b60afecfa3e)
 
