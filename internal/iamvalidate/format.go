@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
@@ -280,7 +281,7 @@ func closestEnumString(got string, want []any) string {
 	if best == "" {
 		return ""
 	}
-	threshold := len(got)/3 + 1
+	threshold := utf8.RuneCountInString(got)/3 + 1
 	if bestDist > threshold {
 		return ""
 	}
