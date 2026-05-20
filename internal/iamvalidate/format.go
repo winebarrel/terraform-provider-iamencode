@@ -11,36 +11,61 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 )
 
+// Beyond this many enum values we stop listing them inline and lean on the
+// "did you mean" suggestion. Dumping the full conditionOperator enum (~150
+// entries) drowns out the actual problem.
+const enumDisplayLimit = 8
+
 // formatError renders a ValidationError as a compile-error-style message:
 // the failing instance path, a snippet of the input rendered as JSON with
 // line numbers, and a caret pointing at the offending value.
 func formatError(v any, ve *jsonschema.ValidationError) string {
 	rendered := renderJSON(v)
-	leaves := collectLeaves(ve)
+	leaves := collectLeaves(ve, nil)
 
 	seen := map[string]bool{}
 	var blocks []string
 	for _, leaf := range leaves {
-		path := formatPath(leaf.InstanceLocation)
-		msg := kindMessage(leaf.ErrorKind)
+		path := formatPath(leaf.path)
+		msg := leafMessage(leaf.err)
 		key := path + "\x00" + msg
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		blocks = append(blocks, formatLeaf(rendered, leaf.InstanceLocation, path, msg))
+		blocks = append(blocks, formatLeaf(rendered, leaf, path, msg))
 	}
 	return "\n" + strings.Join(blocks, "\n\n")
+}
+
+// resolvedLeaf is a ValidationError paired with the InstanceLocation we want
+// to report. We compute the path during traversal because some leaves (most
+// notably kind.PropertyNames) reset their own InstanceLocation to empty —
+// the library treats the property *name* as the instance, leaving us to
+// stitch the parent location and the property name together.
+type resolvedLeaf struct {
+	path  []string
+	err   *jsonschema.ValidationError
+	asKey bool // true when path points at an object key, not its value
 }
 
 // collectLeaves descends the error tree. For grouping nodes (oneOf/anyOf/allOf
 // and friends) it keeps only the cause(s) whose subtree reaches the deepest
 // InstanceLocation — that branch almost always matches the user's intended
 // shape and skips noise like "got array, want object" for an array that the
-// schema also allows.
-func collectLeaves(e *jsonschema.ValidationError) []*jsonschema.ValidationError {
+// schema also allows. parentPath threads the last non-empty InstanceLocation
+// down so propertyNames leaves can resolve to a usable path.
+func collectLeaves(e *jsonschema.ValidationError, parentPath []string) []*resolvedLeaf {
+	effective := parentPath
+	if len(e.InstanceLocation) > 0 {
+		effective = e.InstanceLocation
+	}
+	if pn, ok := e.ErrorKind.(*kind.PropertyNames); ok {
+		leafPath := append(append([]string(nil), effective...), pn.Property)
+		return []*resolvedLeaf{{path: leafPath, err: e, asKey: true}}
+	}
 	if len(e.Causes) == 0 {
-		return []*jsonschema.ValidationError{e}
+		return []*resolvedLeaf{{path: effective, err: e}}
 	}
 	causes := e.Causes
 	if isGrouping(e.ErrorKind) {
@@ -58,9 +83,9 @@ func collectLeaves(e *jsonschema.ValidationError) []*jsonschema.ValidationError 
 		}
 		causes = filtered
 	}
-	var out []*jsonschema.ValidationError
+	var out []*resolvedLeaf
 	for _, c := range causes {
-		out = append(out, collectLeaves(c)...)
+		out = append(out, collectLeaves(c, effective)...)
 	}
 	return out
 }
@@ -83,10 +108,10 @@ func isGrouping(k jsonschema.ErrorKind) bool {
 	return false
 }
 
-func formatLeaf(r *renderedJSON, path []string, pathStr, msg string) string {
+func formatLeaf(r *renderedJSON, leaf *resolvedLeaf, pathStr, msg string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "  %s: %s", pathStr, msg)
-	if snippet := r.snippet(path); snippet != "" {
+	if snippet := r.snippet(leaf.path, leaf.asKey); snippet != "" {
 		sb.WriteByte('\n')
 		sb.WriteString(snippet)
 	}
@@ -125,16 +150,26 @@ func isArrayIndex(s string) bool {
 	return true
 }
 
+// leafMessage renders the human-readable message for a leaf. PropertyNames is
+// special-cased because we want to fold a "did you mean" hint sourced from
+// the inner Enum cause into a single line.
+func leafMessage(e *jsonschema.ValidationError) string {
+	if pn, ok := e.ErrorKind.(*kind.PropertyNames); ok {
+		msg := fmt.Sprintf("invalid property name %q", pn.Property)
+		if hint := didYouMean(pn.Property, e); hint != "" {
+			msg += " — " + hint
+		}
+		return msg
+	}
+	return kindMessage(e.ErrorKind)
+}
+
 func kindMessage(k jsonschema.ErrorKind) string {
 	switch x := k.(type) {
 	case *kind.Type:
 		return fmt.Sprintf("got %s, want %s", x.Got, strings.Join(x.Want, " or "))
 	case *kind.Enum:
-		want := make([]string, len(x.Want))
-		for i, w := range x.Want {
-			want[i] = valueString(w)
-		}
-		return fmt.Sprintf("value must be one of %s (got %s)", strings.Join(want, ", "), valueString(x.Got))
+		return formatEnumMessage(x)
 	case *kind.Const:
 		return fmt.Sprintf("value must be %s (got %s)", valueString(x.Want), valueString(x.Got))
 	case *kind.Required:
@@ -179,6 +214,119 @@ func kindMessage(k jsonschema.ErrorKind) string {
 	return "validation failed"
 }
 
+// formatEnumMessage prints the enum violation. Short lists are enumerated
+// inline; long ones are truncated and accompanied by a suggestion when the
+// got value is close to one of the allowed strings.
+func formatEnumMessage(x *kind.Enum) string {
+	want := make([]string, len(x.Want))
+	for i, w := range x.Want {
+		want[i] = valueString(w)
+	}
+	got := valueString(x.Got)
+	if len(want) <= enumDisplayLimit {
+		return fmt.Sprintf("value must be one of %s (got %s)", strings.Join(want, ", "), got)
+	}
+	shown := strings.Join(want[:enumDisplayLimit], ", ")
+	msg := fmt.Sprintf("value must be one of %s, and %d more (got %s)", shown, len(want)-enumDisplayLimit, got)
+	if gs, ok := x.Got.(string); ok {
+		if best := closestEnumString(gs, x.Want); best != "" {
+			msg += fmt.Sprintf(" — did you mean %q?", best)
+		}
+	}
+	return msg
+}
+
+// didYouMean walks the cause chain looking for an enum and, if found, picks
+// the closest allowed string to the offending value.
+func didYouMean(got string, e *jsonschema.ValidationError) string {
+	en := findEnumCause(e)
+	if en == nil {
+		return ""
+	}
+	if best := closestEnumString(got, en.Want); best != "" {
+		return fmt.Sprintf("did you mean %q?", best)
+	}
+	return ""
+}
+
+func findEnumCause(e *jsonschema.ValidationError) *kind.Enum {
+	if en, ok := e.ErrorKind.(*kind.Enum); ok {
+		return en
+	}
+	for _, c := range e.Causes {
+		if en := findEnumCause(c); en != nil {
+			return en
+		}
+	}
+	return nil
+}
+
+// closestEnumString returns the option closest to got by Levenshtein distance.
+// Returns "" when nothing in want is within a length-relative threshold —
+// suggesting a wildly different string is more confusing than helpful.
+func closestEnumString(got string, want []any) string {
+	best := ""
+	bestDist := -1
+	for _, w := range want {
+		ws, ok := w.(string)
+		if !ok {
+			continue
+		}
+		d := levenshtein(got, ws)
+		if bestDist == -1 || d < bestDist {
+			best, bestDist = ws, d
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	threshold := len(got)/3 + 1
+	if bestDist > threshold {
+		return ""
+	}
+	return best
+}
+
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) == 0 {
+		return len(rb)
+	}
+	if len(rb) == 0 {
+		return len(ra)
+	}
+	prev := make([]int, len(rb)+1)
+	cur := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = minInt(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[len(rb)]
+}
+
+func minInt(a, b, c int) int {
+	if a < b {
+		if a < c {
+			return a
+		}
+		return c
+	}
+	if b < c {
+		return b
+	}
+	return c
+}
+
 func valueString(v any) string {
 	switch x := v.(type) {
 	case string:
@@ -206,12 +354,13 @@ type valueLoc struct {
 }
 
 type renderedJSON struct {
-	lines []string
-	locs  map[string]valueLoc
+	lines   []string
+	locs    map[string]valueLoc
+	keyLocs map[string]valueLoc // location of the object key (the quoted name itself)
 }
 
 func renderJSON(v any) *renderedJSON {
-	r := &renderedJSON{locs: map[string]valueLoc{}}
+	r := &renderedJSON{locs: map[string]valueLoc{}, keyLocs: map[string]valueLoc{}}
 	var sb strings.Builder
 	r.writeValue(&sb, v, 0, nil)
 	r.lines = strings.Split(sb.String(), "\n")
@@ -287,11 +436,20 @@ func (r *renderedJSON) writeObject(sb *strings.Builder, m map[string]any, indent
 	sb.WriteString("{\n")
 	for i, k := range keys {
 		sb.WriteString(strings.Repeat("  ", indent+1))
-		sb.WriteString(strconv.Quote(k))
-		sb.WriteString(": ")
+		keyLine, keyCol := r.cursor(sb)
+		quotedKey := strconv.Quote(k)
+		sb.WriteString(quotedKey)
 		sub := make([]string, len(path)+1)
 		copy(sub, path)
 		sub[len(path)] = k
+		r.keyLocs[pathKey(sub)] = valueLoc{
+			line:     keyLine,
+			col:      keyCol,
+			width:    len(quotedKey),
+			endLine:  keyLine,
+			endWidth: keyCol + len(quotedKey) - 1,
+		}
+		sb.WriteString(": ")
 		r.writeValue(sb, m[k], indent+1, sub)
 		if i < len(keys)-1 {
 			sb.WriteByte(',')
@@ -324,9 +482,18 @@ func (r *renderedJSON) writeArray(sb *strings.Builder, arr []any, indent int, pa
 }
 
 // snippet builds a compile-error-style code frame around the given path.
-// Returns "" if the path can't be located.
-func (r *renderedJSON) snippet(path []string) string {
-	loc, ok := r.locs[pathKey(path)]
+// When asKey is true, the location targets the property *name* (the quoted
+// key) rather than its value, so the caret lands under the bad key. Returns
+// "" if the path can't be located.
+func (r *renderedJSON) snippet(path []string, asKey bool) string {
+	var loc valueLoc
+	var ok bool
+	if asKey {
+		loc, ok = r.keyLocs[pathKey(path)]
+	}
+	if !ok {
+		loc, ok = r.locs[pathKey(path)]
+	}
 	if !ok {
 		return ""
 	}
