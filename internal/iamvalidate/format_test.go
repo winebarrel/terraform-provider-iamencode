@@ -3,6 +3,7 @@ package iamvalidate
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -230,6 +231,96 @@ func TestValidate_ConditionValue_Caret(t *testing.T) {
 	assert.Contains(t, out, "NotAnOperator")
 }
 
+// Regression: a typo'd condition operator used to render as `(root): value must
+// be one of ...` with the entire ~150-entry conditionOperator enum dumped
+// inline. The fix resolves the path through the parent of the propertyNames
+// node, drops the enum dump, and offers a Levenshtein-based suggestion.
+func TestValidate_BadConditionOperator_PropertyNamesPath(t *testing.T) {
+	policy := map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []any{
+			map[string]any{
+				"Effect":   "Allow",
+				"Action":   "s3:ListBucket",
+				"Resource": "*",
+				"Condition": map[string]any{
+					"StringEqualsx": map[string]any{
+						"s3:prefix": "home/",
+					},
+				},
+			},
+		},
+	}
+	out := Validate(policy).Error()
+
+	assert.Contains(t, out, `Statement[0].Condition.StringEqualsx: invalid property name "StringEqualsx"`)
+	assert.Contains(t, out, `did you mean "StringEquals"?`)
+	// Path must not collapse to (root) anymore.
+	assert.NotContains(t, out, "(root):")
+	// The full enum list must NOT be dumped (sample two entries that used to appear).
+	assert.NotContains(t, out, `"ForAllValues:NumericLessThanEquals"`)
+	assert.NotContains(t, out, `"ForAnyValue:ArnNotLike"`)
+	// Caret should sit under the quoted key, width 15 (`"StringEqualsx"`).
+	assert.Contains(t, out, strings.Repeat("^", 15))
+}
+
+// Long enum lists (here: the conditionOperator enum reached via a different
+// path) get truncated rather than dumped wholesale.
+func TestFormatEnumMessage_TruncatesLongEnum(t *testing.T) {
+	want := make([]any, 30)
+	for i := range want {
+		want[i] = fmt.Sprintf("opt%02d", i)
+	}
+	msg := formatEnumMessage(&kind.Enum{Got: "opt03x", Want: want})
+	assert.Contains(t, msg, "and 22 more")    // 30 - 8 displayed
+	assert.Contains(t, msg, `(got "opt03x")`) // got value preserved
+	assert.Contains(t, msg, `did you mean "opt03"?`)
+}
+
+func TestClosestEnumString_RejectsFarMatches(t *testing.T) {
+	// Wildly different inputs should produce no suggestion (avoids confusing
+	// hints like "did you mean 'Null'?" for arbitrary strings).
+	want := []any{"StringEquals", "NumericEquals", "Bool"}
+	assert.Equal(t, "", closestEnumString("xxxxxxxxxx", want))
+}
+
+func TestClosestEnumString_EmptyAndNonStringWant(t *testing.T) {
+	// Empty want list -> no candidate -> "".
+	assert.Equal(t, "", closestEnumString("foo", nil))
+	// Non-string entries in want are skipped via the continue branch. With
+	// only non-strings present we still return "".
+	assert.Equal(t, "", closestEnumString("foo", []any{1, true, nil}))
+}
+
+func TestDidYouMean_NoEnumCause(t *testing.T) {
+	// A PropertyNames error whose cause chain contains no Enum should produce
+	// no suggestion (exercises the `en == nil` branch in didYouMean and the
+	// terminal `return nil` in findEnumCause).
+	e := &jsonschema.ValidationError{
+		ErrorKind: &kind.PropertyNames{Property: "x"},
+		Causes: []*jsonschema.ValidationError{
+			{ErrorKind: &kind.Type{Got: "number", Want: []string{"string"}}},
+		},
+	}
+	assert.Equal(t, "", didYouMean("x", e))
+	assert.Nil(t, findEnumCause(e))
+}
+
+func TestLevenshtein(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"", "abc", 3},
+		{"abc", "", 3},
+		{"kitten", "sitting", 3},
+		{"abc", "abc", 0},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, levenshtein(c.a, c.b), "levenshtein(%q,%q)", c.a, c.b)
+	}
+}
+
 func TestFormatPath(t *testing.T) {
 	cases := []struct {
 		in   []string
@@ -390,7 +481,7 @@ func TestRenderJSON_AllPrimitiveTypes(t *testing.T) {
 
 func TestSnippet_UnknownPath_ReturnsEmpty(t *testing.T) {
 	r := renderJSON(map[string]any{"Statement": []any{}})
-	assert.Empty(t, r.snippet([]string{"DoesNotExist"}))
+	assert.Empty(t, r.snippet([]string{"DoesNotExist"}, false))
 }
 
 func TestFormatError_DedupesIdenticalLeaves(t *testing.T) {
