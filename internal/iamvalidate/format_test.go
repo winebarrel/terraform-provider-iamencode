@@ -284,6 +284,28 @@ func TestClosestEnumString_RejectsFarMatches(t *testing.T) {
 	assert.Equal(t, "", closestEnumString("xxxxxxxxxx", want))
 }
 
+func TestClosestEnumString_EmptyAndNonStringWant(t *testing.T) {
+	// Empty want list -> no candidate -> "".
+	assert.Equal(t, "", closestEnumString("foo", nil))
+	// Non-string entries in want are skipped via the continue branch. With
+	// only non-strings present we still return "".
+	assert.Equal(t, "", closestEnumString("foo", []any{1, true, nil}))
+}
+
+func TestDidYouMean_NoEnumCause(t *testing.T) {
+	// A PropertyNames error whose cause chain contains no Enum should produce
+	// no suggestion (exercises the `en == nil` branch in didYouMean and the
+	// terminal `return nil` in findEnumCause).
+	e := &jsonschema.ValidationError{
+		ErrorKind: &kind.PropertyNames{Property: "x"},
+		Causes: []*jsonschema.ValidationError{
+			{ErrorKind: &kind.Type{Got: "number", Want: []string{"string"}}},
+		},
+	}
+	assert.Equal(t, "", didYouMean("x", e))
+	assert.Nil(t, findEnumCause(e))
+}
+
 func TestLevenshtein(t *testing.T) {
 	cases := []struct {
 		a, b string
