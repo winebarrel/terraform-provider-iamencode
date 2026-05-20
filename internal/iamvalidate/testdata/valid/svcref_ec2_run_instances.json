@@ -1,0 +1,31 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunOnlyApprovedInstanceTypesInRegion",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Region": "ap-northeast-1",
+          "ec2:Tenancy": "default"
+        },
+        "ForAnyValue:StringEquals": {
+          "ec2:InstanceType": [
+            "t3.micro",
+            "t3.small",
+            "t3.medium"
+          ]
+        },
+        "ArnEquals": {
+          "ec2:Vpc": "arn:aws:ec2:ap-northeast-1:123456789012:vpc/vpc-0123456789abcdef0"
+        }
+      }
+    }
+  ]
+}

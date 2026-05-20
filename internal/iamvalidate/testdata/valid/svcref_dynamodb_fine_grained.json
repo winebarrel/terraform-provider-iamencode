@@ -1,0 +1,32 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FineGrainedItemAccess",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": "arn:aws:dynamodb:ap-northeast-1:123456789012:table/Customers",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "dynamodb:LeadingKeys": [
+            "${aws:userid}"
+          ],
+          "dynamodb:Attributes": [
+            "CustomerId",
+            "Email",
+            "DisplayName"
+          ]
+        },
+        "StringEqualsIfExists": {
+          "dynamodb:Select": "SPECIFIC_ATTRIBUTES",
+          "dynamodb:ReturnValues": "NONE"
+        }
+      }
+    }
+  ]
+}
