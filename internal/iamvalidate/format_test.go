@@ -30,7 +30,7 @@ func TestValidate_InvalidEffect_Snippet(t *testing.T) {
 	out := err.Error()
 	assert.Contains(t, out, "Statement[0].Effect: value must be one of \"Allow\", \"Deny\" (got \"Allowx\")")
 	assert.Contains(t, out, `"Effect": "Allowx"`)
-	assert.Regexp(t, `>\s+\d+ \| .*"Effect": "Allowx"`, out)
+	assert.Regexp(t, `>\s+\| .*"Effect": "Allowx"`, out)
 	assert.Contains(t, out, "^^^^^^^^") // 8 carets matching "Allowx" with surrounding quotes
 
 	// noisy "got array, want object" branch from the Statement oneOf is dropped.
@@ -122,18 +122,17 @@ func TestValidate_CaretAlignedWithValue(t *testing.T) {
 	)
 }
 
-func TestSnippet_GutterWidthAlignment(t *testing.T) {
-	// The gutter is %*d sized — when the rendered JSON crosses 10 or 100
-	// lines, both the content and caret prefixes must grow together so the
-	// "|" column stays put.
+func TestSnippet_PipeAlignsAcrossDocumentSizes(t *testing.T) {
+	// The snippet prefix is fixed-width now (no line-number gutter), so the
+	// "|" column must stay put regardless of how deep into the rendered JSON
+	// the failure lives.
 	cases := []struct {
-		name       string
-		itemCount  int
-		wantGutter int
+		name      string
+		itemCount int
 	}{
-		{"single digit", 1, 1},
-		{"two digits", 12, 2},   // ~50 rendered lines
-		{"three digits", 30, 3}, // ~120 rendered lines
+		{"small", 1},
+		{"medium", 12},
+		{"large", 30},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -145,8 +144,6 @@ func TestSnippet_GutterWidthAlignment(t *testing.T) {
 					"Resource": "*",
 				}
 			}
-			// Inject one bad statement at the END so the error path lands
-			// deep in the rendered JSON, forcing a wide gutter.
 			stmts[len(stmts)-1] = map[string]any{
 				"Effect":   "Bogus",
 				"Action":   "s3:*",
@@ -166,18 +163,15 @@ func TestSnippet_GutterWidthAlignment(t *testing.T) {
 			require.NotEmpty(t, content)
 			require.NotEmpty(t, caret)
 
-			cPipe := strings.Index(content, "|")
-			kPipe := strings.Index(caret, "|")
-			assert.Equal(t, cPipe, kPipe,
-				"gutter %d-digit: pipe must align\n  content: %q\n  caret:   %q",
-				c.wantGutter, content, caret)
+			assert.Equal(t,
+				strings.Index(content, "|"),
+				strings.Index(caret, "|"),
+				"pipe must align\n  content: %q\n  caret:   %q", content, caret)
 
-			// The first caret should still land under the first char of the value.
 			assert.Equal(t,
 				strings.Index(content, `"Bogus"`),
 				strings.Index(caret, "^"),
-				"gutter %d-digit: caret must sit under the value\n  content: %q\n  caret:   %q",
-				c.wantGutter, content, caret)
+				"caret must sit under the value\n  content: %q\n  caret:   %q", content, caret)
 		})
 	}
 }
