@@ -499,10 +499,13 @@ func (r *renderedJSON) snippet(path []string, asKey bool) string {
 		return ""
 	}
 
+	// Line numbers are deliberately omitted: we render the JSON ourselves
+	// (sorted keys, fixed indent) so any number we print refers to our
+	// internal render, not the user's source. The ">" marker plus caret are
+	// enough to point at the failure without misleading the reader.
 	const context = 2
 	start := max(loc.line-context, 1)
 	end := min(loc.endLine+context, len(r.lines))
-	gutter := len(strconv.Itoa(end))
 
 	var sb strings.Builder
 	for i := start; i <= end; i++ {
@@ -510,12 +513,11 @@ func (r *renderedJSON) snippet(path []string, asKey bool) string {
 		if i >= loc.line && i <= loc.endLine {
 			marker = ">"
 		}
-		fmt.Fprintf(&sb, "  %s %*d | %s\n", marker, gutter, i, r.lines[i-1])
+		fmt.Fprintf(&sb, "  %s | %s\n", marker, r.lines[i-1])
 		// Caret line only for single-line values. Prefix width must match the
-		// content line's "  {marker} {gutter} | " layout exactly.
+		// content line's "  {marker} | " layout exactly.
 		if i == loc.line && loc.endLine == loc.line && loc.width > 0 {
-			fmt.Fprintf(&sb, "    %s | %s%s\n",
-				strings.Repeat(" ", gutter),
+			fmt.Fprintf(&sb, "    | %s%s\n",
 				strings.Repeat(" ", loc.col-1),
 				strings.Repeat("^", loc.width),
 			)
