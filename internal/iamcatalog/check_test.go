@@ -649,6 +649,120 @@ func TestCheckPolicy_ConditionType_AwsPrefixKey_SkipsTypeCheck(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_ConditionKey_FromActionResource_Allowed(t *testing.T) {
+	// AWS lists many condition keys only under Actions[].Resources[].ConditionKeys —
+	// they don't appear in ActionConditionKeys at all. ec2:CreateNetworkInterfacePermission
+	// is the canonical example: its ActionConditionKeys is just ec2:Region, but
+	// ec2:AuthorizedService is declared under its network-interface resource and
+	// is the documented way to scope the permission. The validator has to merge
+	// resource-level keys into the per-action allowed set or it will falsely
+	// reject correct policies.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions:         map[string][]string{"DoThing": {"svc:Region"}},
+			actionResources: map[string][]string{"DoThing": {"widget"}},
+			actionResourceKeys: map[string]map[string][]string{
+				"DoThing": {"widget": {"svc:WidgetOwner"}},
+			},
+		},
+	})
+	c := New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "svc:DoThing",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"svc:WidgetOwner": "alice"},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_FromTopLevelResource_Allowed(t *testing.T) {
+	// Other services declare the resource's full ConditionKeys list only at
+	// the top-level Resources[] entry and leave Actions[].Resources[].ConditionKeys
+	// empty. Both shapes appear in production catalogs; the validator must
+	// accept keys from either place when the action targets that resource type.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions:         map[string][]string{"DoThing": nil},
+			actionResources: map[string][]string{"DoThing": {"widget"}},
+			resources:       map[string][]string{"widget": {"arn:${Partition}:svc:::${Name}"}},
+			resourceKeys:    map[string][]string{"widget": {"svc:WidgetOwner"}},
+		},
+	})
+	c := New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "svc:DoThing",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"svc:WidgetOwner": "alice"},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_ResourceLevel_StillRejectsUnknown(t *testing.T) {
+	// Sanity: widening the allowed set with resource-level keys must not also
+	// silently swallow genuine typos. A key not declared anywhere on the
+	// action OR its resources is still flagged.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions:         map[string][]string{"DoThing": nil},
+			actionResources: map[string][]string{"DoThing": {"widget"}},
+			actionResourceKeys: map[string]map[string][]string{
+				"DoThing": {"widget": {"svc:WidgetOwner"}},
+			},
+		},
+	})
+	c := New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "svc:DoThing",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"svc:TotallyMadeUp": "x"},
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `condition key "svc:TotallyMadeUp"`)
+}
+
+func TestCheckPolicy_ConditionKey_WildcardAction_IncludesResourceLevelKeys(t *testing.T) {
+	// Wildcard action names fall back to svc.allKeys. Resource-level keys
+	// must be merged into that union too, otherwise s3:* would silently lose
+	// access to keys that real-but-unspecified actions need.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions:         map[string][]string{"DoThing": nil},
+			actionResources: map[string][]string{"DoThing": {"widget"}},
+			actionResourceKeys: map[string]map[string][]string{
+				"DoThing": {"widget": {"svc:WidgetOwner"}},
+			},
+		},
+	})
+	c := New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "svc:*",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"svc:WidgetOwner": "alice"},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
 func TestCheckPolicy_ConditionType_UnknownOperator_SkipsTypeCheck(t *testing.T) {
 	// An operator we don't recognize (future AWS addition, or just garbage)
 	// must not produce a type-mismatch flag. The keyspace check still

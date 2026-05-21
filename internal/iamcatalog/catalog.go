@@ -228,8 +228,16 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		Actions []struct {
 			Name                string   `json:"Name"`
 			ActionConditionKeys []string `json:"ActionConditionKeys"`
-			Resources           []struct {
-				Name string `json:"Name"`
+			// Resources lists the resource types this action operates on.
+			// AWS exposes ConditionKeys at this level: keys that are valid
+			// for (this action, that resource type) — e.g. ec2:AuthorizedService
+			// is only listed under ec2:CreateNetworkInterfacePermission's
+			// network-interface resource, never as an ActionConditionKey. The
+			// catalog must merge these into the per-action allowed set or
+			// strict mode will reject perfectly valid policies.
+			Resources []struct {
+				Name          string   `json:"Name"`
+				ConditionKeys []string `json:"ConditionKeys"`
 			} `json:"Resources"`
 		} `json:"Actions"`
 		ConditionKeys []struct {
@@ -237,8 +245,9 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 			Types []string `json:"Types"`
 		} `json:"ConditionKeys"`
 		Resources []struct {
-			Name       string   `json:"Name"`
-			ARNFormats []string `json:"ARNFormats"`
+			Name          string   `json:"Name"`
+			ARNFormats    []string `json:"ARNFormats"`
+			ConditionKeys []string `json:"ConditionKeys"`
 		} `json:"Resources"`
 	}
 	if err := c.getJSON(ctx, url, &raw); err != nil {
@@ -256,8 +265,13 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		}
 	}
 
-	// Compile each resource type's ARN templates once per service.
+	// Compile each resource type's ARN templates once per service. Also
+	// snapshot each resource type's ConditionKeys so the per-action loop
+	// below can merge them in (those keys are valid wherever an action
+	// targets the resource, and many keys appear ONLY here — never as
+	// service-level or per-action keys).
 	patternsByType := make(map[string][]*regexp.Regexp, len(raw.Resources))
+	keysByResource := make(map[string][]string, len(raw.Resources))
 	allArns := make([]*regexp.Regexp, 0)
 	for _, r := range raw.Resources {
 		patterns := make([]*regexp.Regexp, 0, len(r.ARNFormats))
@@ -267,7 +281,15 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 				allArns = append(allArns, re)
 			}
 		}
-		patternsByType[strings.ToLower(r.Name)] = patterns
+		lr := strings.ToLower(r.Name)
+		patternsByType[lr] = patterns
+		// Roll the top-level resource keys into the service-wide allKeys
+		// fallback too, so the wildcard-action path (s3:*) still sees them
+		// even if no concrete action references the resource.
+		keysByResource[lr] = r.ConditionKeys
+		for _, k := range r.ConditionKeys {
+			allKeys[strings.ToLower(k)] = struct{}{}
+		}
 	}
 
 	arnsByAction := make(map[string][]*regexp.Regexp, len(raw.Actions))
@@ -284,6 +306,26 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 			lk := strings.ToLower(k)
 			set[lk] = struct{}{}
 			allKeys[lk] = struct{}{} // union into service-wide fallback
+		}
+		// Many keys are valid only at the resource level. Two sources to
+		// merge in for each resource the action targets:
+		//   - Actions[].Resources[].ConditionKeys: the keys AWS lists as
+		//     valid for this specific (action, resource) pair.
+		//   - Resources[].ConditionKeys (top-level): the resource type's
+		//     full key list. Some services declare per-action subsets;
+		//     others declare only the top-level list and leave the action
+		//     entry's ConditionKeys empty. Union both so we cover both.
+		for _, r := range a.Resources {
+			for _, k := range r.ConditionKeys {
+				lk := strings.ToLower(k)
+				set[lk] = struct{}{}
+				allKeys[lk] = struct{}{}
+			}
+			for _, k := range keysByResource[strings.ToLower(r.Name)] {
+				lk := strings.ToLower(k)
+				set[lk] = struct{}{}
+				allKeys[lk] = struct{}{}
+			}
 		}
 		keysByAction[la] = set
 

@@ -73,11 +73,13 @@ func newFakeServer(t *testing.T, services map[string][]string) *fakeServer {
 // tests. Every field is optional; absent or empty maps serialize as empty
 // JSON arrays, which the catalog parser handles identically to truly absent.
 type fakeServiceData struct {
-	actions          map[string][]string // action → ActionConditionKeys
-	actionResources  map[string][]string // action → list of Resources[].Name
-	svcConditionKeys []string            // service-level ConditionKeys[] names
-	svcKeyTypes      map[string]string   // optional: key name → declared type (e.g. "Numeric")
-	resources        map[string][]string // resource type → ARN format templates
+	actions            map[string][]string            // action → ActionConditionKeys
+	actionResources    map[string][]string            // action → list of Resources[].Name
+	actionResourceKeys map[string]map[string][]string // action → resource type → Actions[].Resources[].ConditionKeys
+	svcConditionKeys   []string                       // service-level ConditionKeys[] names
+	svcKeyTypes        map[string]string              // optional: key name → declared type (e.g. "Numeric")
+	resources          map[string][]string            // resource type → ARN format templates
+	resourceKeys       map[string][]string            // resource type → top-level Resources[].ConditionKeys
 }
 
 func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *fakeServer {
@@ -126,7 +128,14 @@ func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *f
 					if j > 0 {
 						fmt.Fprint(w, ",")
 					}
-					fmt.Fprintf(w, `{"Name":%q}`, rt)
+					fmt.Fprintf(w, `{"Name":%q,"ConditionKeys":[`, rt)
+					for k, ck := range d.actionResourceKeys[action][rt] {
+						if k > 0 {
+							fmt.Fprint(w, ",")
+						}
+						fmt.Fprintf(w, "%q", ck)
+					}
+					fmt.Fprint(w, "]}")
 				}
 				fmt.Fprint(w, "]}")
 			}
@@ -154,6 +163,13 @@ func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *f
 						fmt.Fprint(w, ",")
 					}
 					fmt.Fprintf(w, "%q", f)
+				}
+				fmt.Fprint(w, `],"ConditionKeys":[`)
+				for k, ck := range d.resourceKeys[rtype] {
+					if k > 0 {
+						fmt.Fprint(w, ",")
+					}
+					fmt.Fprintf(w, "%q", ck)
 				}
 				fmt.Fprint(w, "]}")
 			}
