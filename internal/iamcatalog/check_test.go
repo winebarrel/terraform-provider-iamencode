@@ -297,6 +297,46 @@ func TestCheckPolicy_ConditionKey_BareStarActionSkipsCheck(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_ConditionKey_MultipleServices_UnionsKeys(t *testing.T) {
+	// Statement mixes s3 and lambda. Each Condition key must be valid for at
+	// least one of the actions (union semantics); a key that belongs to
+	// neither service is rejected.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"s3": {
+			actions:          map[string][]string{"ListBucket": {"s3:prefix"}},
+			svcConditionKeys: []string{"s3:prefix"},
+		},
+		"lambda": {
+			actions:          map[string][]string{"InvokeFunction": {"lambda:FunctionUrlAuthType"}},
+			svcConditionKeys: []string{"lambda:FunctionUrlAuthType"},
+		},
+	})
+	c := New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": []any{"s3:ListBucket", "lambda:InvokeFunction"},
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"s3:prefix":                  "logs/", // valid for s3:ListBucket
+						"lambda:FunctionUrlAuthType": "NONE",  // valid for lambda:InvokeFunction
+						"aws:SourceIp":               "0/0",   // aws:* global
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+
+	// Same actions, but one key belongs to neither service — flagged.
+	policy["Statement"].([]any)[0].(map[string]any)["Condition"] = map[string]any{
+		"StringEquals": map[string]any{"iam:PassedToService": "lambda.amazonaws.com"},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "iam:PassedToService")
+}
+
 func TestCheckPolicy_ConditionKey_MultipleActions_UnionsKeys(t *testing.T) {
 	// ListBucket allows s3:prefix, GetObject does not. With both in the same
 	// Statement the union does, so s3:prefix passes.
