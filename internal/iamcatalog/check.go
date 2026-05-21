@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 )
@@ -187,6 +188,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 	}
 
 	allowed := make(map[string]struct{})
+	keyTypes := make(map[string]string)
 	for _, a := range actions {
 		if a == "*" {
 			return nil, nil // can't narrow which keys are valid
@@ -219,9 +221,10 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 		} else {
 			keys = svc.allKeys
 		}
-		for k := range keys {
-			allowed[k] = struct{}{}
-		}
+		maps.Copy(allowed, keys)
+		// Merge type info too. Same key declared by multiple services should
+		// have the same type; last write wins if they disagree (unlikely).
+		maps.Copy(keyTypes, svc.keyTypes)
 	}
 
 	var issues []string
@@ -230,20 +233,85 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 		if !ok {
 			continue
 		}
+		expectedType, opKnown := operatorExpectedType(opName)
 		for key := range operands {
 			lk := strings.ToLower(key)
 			if strings.HasPrefix(lk, "aws:") {
 				continue // AWS-global condition keys are always allowed
 			}
-			if _, ok := allowed[lk]; ok {
+			if _, ok := allowed[lk]; !ok {
+				issues = append(issues, fmt.Sprintf(
+					"Statement[%d]: condition key %q (under %s) is not valid for the statement's actions",
+					stmtIdx, key, opName))
 				continue
 			}
-			issues = append(issues, fmt.Sprintf(
-				"Statement[%d]: condition key %q (under %s) is not valid for the statement's actions",
-				stmtIdx, key, opName))
+			// Key passed the per-action check; if we know its declared type
+			// and the operator's expected type, confirm they match. Missing
+			// either side (unknown operator or untyped key) means we can't
+			// judge — skip silently.
+			actualType := keyTypes[lk]
+			if !opKnown || expectedType == "" || actualType == "" {
+				continue
+			}
+			if actualType != expectedType {
+				issues = append(issues, fmt.Sprintf(
+					"Statement[%d]: operator %s expects a %s key, but %q is declared as %s",
+					stmtIdx, opName, expectedType, key, actualType))
+			}
 		}
 	}
 	return issues, nil
+}
+
+// operatorExpectedType returns the catalog-style type that the given IAM
+// condition operator expects, plus a flag indicating whether we recognized
+// the operator at all. AWS allows two prefix modifiers (ForAllValues:,
+// ForAnyValue:) and one suffix (IfExists); we strip them before lookup.
+// The Null operator is special — it works on any type and returns ("", true)
+// so the caller can skip type validation without treating it as unknown.
+func operatorExpectedType(op string) (string, bool) {
+	op = strings.TrimPrefix(op, "ForAllValues:")
+	op = strings.TrimPrefix(op, "ForAnyValue:")
+	op = strings.TrimSuffix(op, "IfExists")
+	if op == "Null" {
+		return "", true // any type accepted
+	}
+	t, ok := opTypeTable[op]
+	return t, ok
+}
+
+// opTypeTable maps each IAM condition operator (modifiers already stripped)
+// to the catalog "Types" value it expects. See the AWS IAM user guide,
+// "Condition operators" for the canonical list. Operators not in this
+// table are treated as unknown — the type check skips rather than
+// false-positive on AWS additions we haven't seen yet.
+var opTypeTable = map[string]string{
+	"StringEquals":              "String",
+	"StringNotEquals":           "String",
+	"StringEqualsIgnoreCase":    "String",
+	"StringNotEqualsIgnoreCase": "String",
+	"StringLike":                "String",
+	"StringNotLike":             "String",
+	"NumericEquals":             "Numeric",
+	"NumericNotEquals":          "Numeric",
+	"NumericLessThan":           "Numeric",
+	"NumericLessThanEquals":     "Numeric",
+	"NumericGreaterThan":        "Numeric",
+	"NumericGreaterThanEquals":  "Numeric",
+	"DateEquals":                "Date",
+	"DateNotEquals":             "Date",
+	"DateLessThan":              "Date",
+	"DateLessThanEquals":        "Date",
+	"DateGreaterThan":           "Date",
+	"DateGreaterThanEquals":     "Date",
+	"Bool":                      "Bool",
+	"BinaryEquals":              "Binary",
+	"IpAddress":                 "IPAddress",
+	"NotIpAddress":              "IPAddress",
+	"ArnEquals":                 "ARN",
+	"ArnNotEquals":              "ARN",
+	"ArnLike":                   "ARN",
+	"ArnNotLike":                "ARN",
 }
 
 // checkResources validates that each Resource ARN matches one of the ARN

@@ -29,7 +29,7 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 		Summary: "policy_strict function",
 		MarkdownDescription: "Like `policy`, but additionally validates the policy against the live " +
 			"[AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). " +
-			"Three extra checks run on top of the JSON Schema:\n\n" +
+			"Four extra checks run on top of the JSON Schema:\n\n" +
 			"1. Non-wildcard `Action` / `NotAction` values (e.g. `s3:GetObject`) must name a real service and a real " +
 			"action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns (`*`, `s3:*`, `s3:Get*`, " +
 			"`*:GetObject`) aren't expanded and are accepted without catalog lookup.\n" +
@@ -39,7 +39,12 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"(e.g. `s3:*`, `s3:Get*`), the check falls back to the service-wide union of condition keys; statements " +
 			"whose service prefix is a wildcard (e.g. `*:GetObject`) or whose Action is the bare `*` skip the condition " +
 			"check entirely because the keyspace can't be narrowed.\n" +
-			"3. Every `Resource` ARN must match one of the ARN templates declared for at least one of the statement's " +
+			"3. Each `Condition` operator must match its key's declared type. For example `s3:max-keys` is a numeric " +
+			"condition key, so using it under `StringEquals` is flagged — only `NumericEquals` / `NumericLessThan` / etc. " +
+			"are valid. Operator modifiers `ForAllValues:`, `ForAnyValue:`, and the `IfExists` suffix are stripped before " +
+			"the lookup. The `Null` operator works on any key type. `aws:*` keys skip the type check (the catalog does " +
+			"not publish their types).\n" +
+			"4. Every `Resource` ARN must match one of the ARN templates declared for at least one of the statement's " +
 			"actions. This catches mismatches like a bucket-only ARN (`arn:aws:s3:::my-bucket`) on `s3:GetObject` — that " +
 			"action only operates on object ARNs (`.../my-bucket/key`). The bare `*` Resource always passes; the same " +
 			"wildcard rules from check (2) apply to the action list. `NotResource` statements skip the check entirely. " +

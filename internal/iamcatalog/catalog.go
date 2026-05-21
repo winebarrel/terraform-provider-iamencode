@@ -74,6 +74,14 @@ type Service struct {
 	// as the fallback when the action name is a wildcard (e.g. "s3:*") and
 	// we therefore can't narrow the resource types.
 	allArns []*regexp.Regexp
+
+	// keyTypes maps lowercased condition key name → its normalized type
+	// (one of "String", "Numeric", "Bool", "Date", "ARN", "IPAddress",
+	// "Binary"). AWS reports "ArrayOfX" for keys that take multi-value
+	// values; we collapse those to "X" since the operator check doesn't
+	// care about cardinality. A missing entry means we don't know the
+	// type, and the caller should skip type validation for that key.
+	keyTypes map[string]string
 }
 
 // HasAction reports whether the service exposes the given action.
@@ -189,7 +197,8 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 			} `json:"Resources"`
 		} `json:"Actions"`
 		ConditionKeys []struct {
-			Name string `json:"Name"`
+			Name  string   `json:"Name"`
+			Types []string `json:"Types"`
 		} `json:"ConditionKeys"`
 		Resources []struct {
 			Name       string   `json:"Name"`
@@ -202,8 +211,13 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 	actions := make(map[string]struct{}, len(raw.Actions))
 	keysByAction := make(map[string]map[string]struct{}, len(raw.Actions))
 	allKeys := make(map[string]struct{}, len(raw.ConditionKeys))
+	keyTypes := make(map[string]string, len(raw.ConditionKeys))
 	for _, ck := range raw.ConditionKeys {
-		allKeys[strings.ToLower(ck.Name)] = struct{}{}
+		lk := strings.ToLower(ck.Name)
+		allKeys[lk] = struct{}{}
+		if len(ck.Types) > 0 {
+			keyTypes[lk] = strings.TrimPrefix(ck.Types[0], "ArrayOf")
+		}
 	}
 
 	// Compile each resource type's ARN templates once per service.
@@ -254,6 +268,7 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		keysByAction: keysByAction,
 		arnsByAction: arnsByAction,
 		allArns:      allArns,
+		keyTypes:     keyTypes,
 	}, nil
 }
 

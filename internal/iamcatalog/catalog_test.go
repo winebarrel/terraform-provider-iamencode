@@ -75,7 +75,8 @@ func newFakeServer(t *testing.T, services map[string][]string) *fakeServer {
 type fakeServiceData struct {
 	actions          map[string][]string // action → ActionConditionKeys
 	actionResources  map[string][]string // action → list of Resources[].Name
-	svcConditionKeys []string            // service-level ConditionKeys[]
+	svcConditionKeys []string            // service-level ConditionKeys[] names
+	svcKeyTypes      map[string]string   // optional: key name → declared type (e.g. "Numeric")
 	resources        map[string][]string // resource type → ARN format templates
 }
 
@@ -134,7 +135,11 @@ func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *f
 				if j > 0 {
 					fmt.Fprint(w, ",")
 				}
-				fmt.Fprintf(w, `{"Name":%q}`, k)
+				if t, ok := d.svcKeyTypes[k]; ok {
+					fmt.Fprintf(w, `{"Name":%q,"Types":[%q]}`, k, t)
+				} else {
+					fmt.Fprintf(w, `{"Name":%q}`, k)
+				}
 			}
 			fmt.Fprint(w, `],"Resources":[`)
 			j := 0

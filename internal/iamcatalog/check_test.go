@@ -184,6 +184,10 @@ func withConditionKeys(t *testing.T) *Catalog {
 				"GetObject":  nil,
 			},
 			svcConditionKeys: []string{"s3:prefix", "s3:max-keys"},
+			svcKeyTypes: map[string]string{
+				"s3:prefix":   "String",
+				"s3:max-keys": "Numeric",
+			},
 		},
 	})
 	return New(fs.server.URL)
@@ -473,6 +477,121 @@ func TestCheckPolicy_ConditionKey_OperandIsNotAMap(t *testing.T) {
 		},
 	}
 	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionType_OperatorMatchesKeyType(t *testing.T) {
+	c := withConditionKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:ListBucket",
+				"Condition": map[string]any{
+					"NumericLessThan": map[string]any{"s3:max-keys": "100"},
+					"StringEquals":    map[string]any{"s3:prefix": "logs/"},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionType_OperatorMismatch_Flagged(t *testing.T) {
+	// s3:max-keys is Numeric in the catalog; StringEquals expects a String
+	// key — this is a real mistake we want to surface.
+	c := withConditionKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:ListBucket",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"s3:max-keys": "100"},
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `operator StringEquals expects a String key, but "s3:max-keys" is declared as Numeric`)
+}
+
+func TestCheckPolicy_ConditionType_OperatorModifiersStripped(t *testing.T) {
+	// ForAllValues:/ForAnyValue: prefix and IfExists suffix don't change
+	// the operator's expected type. The check should normalize them away
+	// before looking up the type.
+	c := withConditionKeys(t)
+	cases := []string{
+		"ForAllValues:StringEquals",
+		"ForAnyValue:StringEquals",
+		"StringEqualsIfExists",
+		"ForAllValues:StringEqualsIfExists",
+	}
+	for _, op := range cases {
+		t.Run(op, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action": "s3:ListBucket",
+						"Condition": map[string]any{
+							op: map[string]any{"s3:prefix": "logs/"},
+						},
+					},
+				},
+			}
+			require.NoError(t, CheckPolicy(context.Background(), c, policy), op)
+		})
+	}
+}
+
+func TestCheckPolicy_ConditionType_NullOperator_AcceptsAnyType(t *testing.T) {
+	// "Null" tests for the presence/absence of a key — it works regardless
+	// of the key's declared type, so Null on a Numeric key must pass.
+	c := withConditionKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:ListBucket",
+				"Condition": map[string]any{
+					"Null": map[string]any{"s3:max-keys": "true"},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionType_AwsPrefixKey_SkipsTypeCheck(t *testing.T) {
+	// AWS-global keys (aws:*) aren't in any service's catalog, so we don't
+	// know their types. Skip the type check — better than false positives.
+	c := withConditionKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:ListBucket",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"aws:RequestedRegion": "us-east-1"},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionType_UnknownOperator_SkipsTypeCheck(t *testing.T) {
+	// An operator we don't recognize (future AWS addition, or just garbage)
+	// must not produce a type-mismatch flag. The keyspace check still
+	// catches genuine typos in the key itself.
+	c := withConditionKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:ListBucket",
+				"Condition": map[string]any{
+					"FutureOperator": map[string]any{"s3:max-keys": "100"},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
 // withResources wires up a catalog where s3 has GetObject (object only),
