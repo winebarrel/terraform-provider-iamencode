@@ -5,11 +5,16 @@
 [![codecov](https://codecov.io/gh/winebarrel/terraform-provider-iamencode/graph/badge.svg?token=Edpy75fnRI)](https://codecov.io/gh/winebarrel/terraform-provider-iamencode)
 [![AI Generated](https://img.shields.io/badge/AI%20Generated-Claude-orange?logo=anthropic)](https://claude.ai/claude-code)
 
-Terraform provider with a user-defined function that validates an IAM policy document (passed as a Terraform object) against an embedded [JSON Schema](internal/iamvalidate/schema.json) and returns it as a JSON string.
+Terraform provider with user-defined functions that validate an IAM policy document (passed as a Terraform object) and return it as a JSON string. Two functions are exposed:
+
+- **`provider::iamencode::policy`** — structural validation against an embedded [JSON Schema](internal/iamvalidate/schema.json). Offline, no network.
+- **`provider::iamencode::policy_strict`** — everything `policy` does, plus semantic checks against the live [AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html) (catalog fetched lazily and cached for the provider process).
 
 ![](https://github.com/user-attachments/assets/477489b0-3eff-4385-8281-4c1ac56bec17)
 
-The schema is structural (no Action/Resource semantic validation), but it does catch:
+## What gets caught
+
+### `policy` (schema-only)
 
 - Unknown / typo'd statement keys (`Actoin`, `Resourse`, ...)
 - Missing required top-level keys (`Version`, `Statement`)
@@ -18,6 +23,17 @@ The schema is structural (no Action/Resource semantic validation), but it does c
 - Missing both `Action` and `NotAction`
 - Unknown / typo'd Condition operators (`StringEquls`, `ForAllValue:StringEquals`, ...)
 - Wrong JSON types (e.g. `Action: 42`, empty arrays, nested arrays)
+
+### `policy_strict` (schema + catalog)
+
+Everything `policy` catches, **and**:
+
+- **Unknown service prefix** — `s3xx:GetObject` → `unknown AWS service prefix "s3xx"`
+- **Unknown action** — `s3:Frobnicate` → `unknown action "Frobnicate" for service "s3"`
+- **Wildcard pattern that matches nothing** — `s3:Frobni*` → `action pattern "s3:Frobni*" matches no actions in service "s3"`
+- **Condition key not valid for the action** — `s3:GetObject` + `Condition: { StringEquals: { "s3:prefix": "..." } }` → `condition key "s3:prefix" (under StringEquals) is not valid for the statement's actions` (s3:prefix is meaningful for ListBucket, not GetObject)
+- **Operator type mismatch** — `StringEquals: { "s3:max-keys": "100" }` → `operator StringEquals expects a String key, but "s3:max-keys" is declared as Numeric`
+- **Resource ARN shape mismatch** — `s3:GetObject` + `Resource: "arn:aws:s3:::my-bucket"` → `resource "arn:aws:s3:::my-bucket" does not match any ARN format for the statement's actions` (object actions need `bucket/key` form)
 
 ## Usage
 
@@ -31,6 +47,7 @@ terraform {
   }
 }
 
+# Schema-only validation, offline.
 output "policy" {
   value = provider::iamencode::policy({
     Version = "2012-10-17"
@@ -43,7 +60,35 @@ output "policy" {
     ]
   })
 }
+
+# Schema + live AWS catalog validation. Catches more typos at the cost of
+# a few HTTP calls (cached per provider process).
+output "policy_strict" {
+  value = provider::iamencode::policy_strict({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = "arn:aws:s3:::my-bucket"
+        Condition = {
+          StringEquals    = { "s3:prefix" = "logs/" }
+          NumericLessThan = { "s3:max-keys" = "1000" }
+        }
+      },
+    ]
+  })
+}
 ```
+
+### `policy_strict` notes
+
+- Fetches `https://servicereference.us-east-1.amazonaws.com` lazily, once per service per provider process. A single `terraform plan` makes at most one HTTP call per referenced service.
+- The endpoint can be overridden via the `IAMENCODE_SERVICEREF_ENDPOINT` environment variable (useful for corporate mirrors or testing).
+- If the catalog endpoint is unreachable, `policy_strict` fails — strict mode never silently passes a policy it couldn't actually verify. Use `policy` instead in airgapped environments.
+- Wildcard service prefixes (`*:GetObject`) and the bare `*` action skip the catalog checks: expanding them would require fetching every AWS service.
+- `NotAction` / `NotResource` statements skip the action-keyspace and resource-ARN checks since the inverted set isn't a usable domain.
+- Known limitation: a handful of resource ARNs whose templates lack literal `/` while the actual values contain `/` (CloudWatch Logs log-group names, `/aws/lambda/foo`) get flagged. Use `Resource = "*"` or a wildcard ARN as a workaround.
 
 ## Development
 
