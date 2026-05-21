@@ -12,14 +12,20 @@ import (
 // designed to be called *after* schema validation has already passed, so the
 // shapes (Statement object-or-array, Action string-or-array) are assumed valid.
 //
-// Wildcard tokens ("*" anywhere in the prefix or name) are skipped — matching
-// wildcards against the catalog would require pattern expansion that we don't
-// want to take on yet.
+// Wildcard tokens (the bare "*", or "*" anywhere within a service:action pair)
+// are accepted without consulting the catalog — pattern expansion is out of
+// scope. Strings that are neither "*" nor "service:action" shape are rejected
+// outright: the JSON Schema only checks that Action is a string, so it's our
+// job here to catch values like "GetObject" (missing the service prefix).
 //
 // Network failures degrade gracefully: ErrUnavailable from a lookup skips that
-// action rather than failing the whole call. Only "definitely a typo" results
-// (ErrUnknownService, unknown action under a known service) surface as errors.
+// action rather than failing the whole call. A nil catalog is also treated as
+// "unavailable" so a default-constructed PolicyStrictFunction or future caller
+// can't trip a nil-pointer panic.
 func CheckActions(ctx context.Context, c *Catalog, policy any) error {
+	if c == nil {
+		return nil
+	}
 	stmts := statements(policy)
 	var issues []string
 	for i, s := range stmts {
@@ -36,9 +42,12 @@ func CheckActions(ctx context.Context, c *Catalog, policy any) error {
 }
 
 func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) string {
+	if action == "*" {
+		return "" // the all-actions wildcard — valid IAM, nothing to check
+	}
 	prefix, name, ok := splitAction(action)
 	if !ok {
-		return "" // not "service:action" shape — schema would have caught real malformations
+		return fmt.Sprintf("Statement[%d]: malformed action %q (expected \"service:action\" or \"*\")", stmtIndex, action)
 	}
 	if strings.ContainsRune(prefix, '*') || strings.ContainsRune(name, '*') {
 		return "" // wildcards: out of scope for the catalog check

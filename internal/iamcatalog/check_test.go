@@ -120,6 +120,45 @@ func TestCheckActions_NetworkFailure_GracefulDegrade(t *testing.T) {
 	assert.NoError(t, CheckActions(context.Background(), c, policy))
 }
 
+func TestCheckActions_NilCatalog_Skips(t *testing.T) {
+	// Defensive: a zero-value PolicyStrictFunction or a caller that forgot to
+	// inject a catalog must not panic. nil is treated as "unavailable" → skip.
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "totallyfake:Action"},
+		},
+	}
+	assert.NoError(t, CheckActions(context.Background(), nil, policy))
+}
+
+func TestCheckActions_MalformedAction(t *testing.T) {
+	// The JSON Schema only requires Action to be a string, so it lets these
+	// through. Strict mode must catch them — that's the whole point.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	cases := []string{
+		"GetObject",  // no colon
+		"s3:",        // empty action
+		":GetObject", // empty prefix
+		"",           // empty string
+	}
+	for _, a := range cases {
+		t.Run(a, func(t *testing.T) {
+			policy := map[string]any{"Statement": []any{map[string]any{"Action": a}}}
+			err := CheckActions(context.Background(), c, policy)
+			require.Error(t, err, "malformed action %q should fail strict validation", a)
+			assert.Contains(t, err.Error(), "malformed action")
+		})
+	}
+}
+
+func TestCheckActions_BareStarAccepted(t *testing.T) {
+	// "*" alone is a legitimate IAM wildcard (all actions). It does not match
+	// the splitAction shape, so it must be handled explicitly before that check.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	policy := map[string]any{"Statement": []any{map[string]any{"Action": "*"}}}
+	assert.NoError(t, CheckActions(context.Background(), c, policy))
+}
+
 func TestCheckActions_NotAPolicyShape(t *testing.T) {
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	// Defensive: schema validation should reject these upstream, but the
