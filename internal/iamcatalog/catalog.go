@@ -3,8 +3,10 @@
 // memory for the lifetime of the process. Within a single `terraform plan`
 // the provider process is long-lived, so each service is fetched at most once.
 //
-// Failures degrade gracefully: a network error returns ErrUnavailable so the
-// caller can skip catalog-based checks rather than fail the whole plan.
+// Errors surface as sentinels (ErrUnknownService, ErrUnavailable) and callers
+// pick the policy. The strict validator in this package surfaces both as hard
+// errors; other callers could choose to skip silently. Don't bake an "always
+// skip on ErrUnavailable" assumption into the API surface here.
 package iamcatalog
 
 import (
@@ -33,12 +35,17 @@ const (
 
 var (
 	// ErrUnknownService — the prefix is not present in the AWS service index.
-	// The caller should treat this as a validation failure (likely a typo).
+	// Almost always a typo. Callers decide whether to surface it as an error
+	// or absorb it (e.g. CheckPolicy reports it from checkOne but continues
+	// the per-statement loop so other checks still report their findings).
 	ErrUnknownService = errors.New("unknown AWS service prefix")
 
-	// ErrUnavailable — the catalog could not be fetched (network down, timeout,
-	// HTTP error). The caller should treat this as "skip catalog validation"
-	// rather than fail; the embedded schema still ran.
+	// ErrUnavailable — the catalog could not be fetched (network down,
+	// timeout, HTTP 4xx/5xx, malformed response). It's a sentinel; the policy
+	// is up to the caller. CheckPolicy surfaces it as a hard error — strict
+	// mode shouldn't silently pass a policy it couldn't actually verify —
+	// but a future caller could legitimately choose to skip catalog-based
+	// checks on ErrUnavailable instead. Don't assume one behavior here.
 	ErrUnavailable = errors.New("AWS service reference unavailable")
 )
 
