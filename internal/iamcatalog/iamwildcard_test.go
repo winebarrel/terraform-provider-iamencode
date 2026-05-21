@@ -2,6 +2,7 @@ package iamcatalog
 
 import (
 	"regexp"
+	"regexp/syntax"
 	"strings"
 	"testing"
 
@@ -23,6 +24,40 @@ func TestIamWildcardToRegex(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
 			assert.Equal(t, tc.want, iamWildcardToRegex(tc.in))
+		})
+	}
+}
+
+func TestRegexIntersects_MalformedFailsClosed(t *testing.T) {
+	// Unparseable regex sources should propagate as "no intersection
+	// proven" rather than panic. The validator drops the pattern silently
+	// if compilation fails (it should never happen in normal flow — both
+	// sides come from us — but the helper is exported within the package
+	// and the defensive return is worth covering).
+	assert.False(t, regexIntersects("[unterminated", "^a$"))
+	assert.False(t, regexIntersects("^a$", "[unterminated"))
+}
+
+func TestAcceptedRanges(t *testing.T) {
+	cases := []struct {
+		name  string
+		op    syntax.InstOp
+		runes []rune
+		want  [][2]rune
+	}{
+		{"any", syntax.InstRuneAny, nil, [][2]rune{{0, 0x10ffff}}},
+		{"any-not-nl", syntax.InstRuneAnyNotNL, nil, [][2]rune{{0, '\n' - 1}, {'\n' + 1, 0x10ffff}}},
+		{"single", syntax.InstRune1, []rune{'a'}, [][2]rune{{'a', 'a'}}},
+		{"range", syntax.InstRune, []rune{'a', 'c', 'x', 'z'}, [][2]rune{{'a', 'c'}, {'x', 'z'}}},
+		// Non-char-consuming ops must yield nil — the BFS uses this as a
+		// signal that the instruction isn't a real character transition.
+		{"match", syntax.InstMatch, nil, nil},
+		{"nop", syntax.InstNop, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := acceptedRanges(syntax.Inst{Op: tc.op, Rune: tc.runes})
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
