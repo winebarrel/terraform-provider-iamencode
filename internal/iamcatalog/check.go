@@ -100,7 +100,7 @@ func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) (st
 	if !ok {
 		return fmt.Sprintf("Statement[%d]: malformed action %q (expected \"service:action\" or \"*\")", stmtIndex, action), nil
 	}
-	if strings.ContainsRune(prefix, '*') {
+	if strings.ContainsAny(prefix, "*?") {
 		// Wildcard in the service prefix would require fetching every
 		// service in the catalog (449+ at time of writing) to know if any
 		// real action matches — pattern expansion of that scope is out of
@@ -116,7 +116,7 @@ func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) (st
 	case err != nil:
 		return "", err
 	}
-	if strings.ContainsRune(name, '*') || strings.ContainsRune(name, '?') {
+	if strings.ContainsAny(name, "*?") {
 		// Wildcard within the action name. Expand against the service's
 		// real action list — catches patterns like "s3:Frobni*" that look
 		// plausible but match nothing.
@@ -213,7 +213,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 		if !ok {
 			continue // checkOne already flags malformed actions
 		}
-		if strings.ContainsRune(prefix, '*') {
+		if strings.ContainsAny(prefix, "*?") {
 			return nil, nil // wildcard service → can't constrain
 		}
 		svc, err := c.Lookup(ctx, prefix)
@@ -230,7 +230,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 			return nil, err
 		}
 		var keys map[string]struct{}
-		if strings.ContainsRune(name, '*') {
+		if strings.ContainsAny(name, "*?") {
 			keys = svc.allKeys
 		} else if perAction, has := svc.keysByAction[strings.ToLower(name)]; has {
 			keys = perAction
@@ -357,7 +357,7 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		if !ok {
 			continue
 		}
-		if strings.ContainsRune(prefix, '*') {
+		if strings.ContainsAny(prefix, "*?") {
 			return nil, nil
 		}
 		svc, err := c.Lookup(ctx, prefix)
@@ -370,7 +370,7 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			return nil, err
 		}
 		resolvedAny = true
-		if strings.ContainsRune(name, '*') {
+		if strings.ContainsAny(name, "*?") {
 			patterns = append(patterns, svc.allArns...)
 			continue
 		}

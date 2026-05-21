@@ -135,14 +135,19 @@ func TestCheckPolicy_WildcardName_EmptyService_Flagged(t *testing.T) {
 
 func TestCheckPolicy_WildcardServicePrefix_StillSkipped(t *testing.T) {
 	// A wildcard in the *service* prefix can't be expanded without fetching
-	// every service catalog (hundreds of services). Keep skipping silently.
+	// every service catalog (hundreds of services). Keep skipping silently
+	// — and not just for "*", but also for "?" (the other IAM wildcard).
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
-	policy := map[string]any{
-		"Statement": []any{
-			map[string]any{"Action": "*:GetObject"},
-		},
+	for _, a := range []string{"*:GetObject", "s*:GetObject", "s?:GetObject", "?3:GetObject"} {
+		t.Run(a, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{"Action": a},
+				},
+			}
+			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+		})
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_NotActionChecked(t *testing.T) {
