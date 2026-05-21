@@ -1294,8 +1294,12 @@ func TestCheckPolicy_Resource_AllActionsMalformed_SkipsCheck(t *testing.T) {
 }
 
 // withServiceLevelAction wires up a service with one normal action (operates
-// on a "thing" resource) and one service-level action (Resources is nil —
-// the AWS service reference shape for actions like iam:ListUsers).
+// on a "thing" resource) and one service-level action whose service-reference
+// Resources entry is absent. The fake server currently always emits
+// "Resources":[], not null — but Go's json package decodes both forms into
+// the same nil slice, so the per-action pattern set ends up identical to the
+// real iam:ListUsers shape and the catalog code path is the one the test
+// actually exercises.
 func withServiceLevelAction(t *testing.T) *Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
@@ -1306,7 +1310,9 @@ func withServiceLevelAction(t *testing.T) *Catalog {
 			},
 			actionResources: map[string][]string{
 				"WriteThing": {"thing"},
-				// "ListAllThings" omitted → empty Resources in service-reference
+				// "ListAllThings" omitted → "Resources":[] in the fake JSON,
+				// which decodes to the same nil slice as the AWS reference's
+				// "Resources":null (or missing field).
 			},
 			resources: map[string][]string{
 				"thing": {"arn:${Partition}:svc:::${Name}"},
