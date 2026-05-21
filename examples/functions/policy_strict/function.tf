@@ -6,14 +6,18 @@ terraform {
   }
 }
 
-# policy_strict catches mistakes the schema alone cannot. Two examples:
+# policy_strict catches mistakes the schema alone cannot. Three examples:
 #
 #   - Replace "GetObject" with e.g. "Frobnicate":
-#       Statement[0]: unknown action "Frobnicate" for service "s3"
+#       Statement[1]: unknown action "Frobnicate" for service "s3"
 #
 #   - Move "s3:prefix" under the s3:GetObject statement:
-#       Statement[0]: condition key "s3:prefix" (under StringEquals)
+#       Statement[1]: condition key "s3:prefix" (under StringEquals)
 #         is not valid for the statement's actions
+#
+#   - Use a bucket-only ARN on the object-reading statement:
+#       Statement[1]: resource "arn:aws:s3:::my-bucket" does not match
+#         any ARN format for the statement's actions
 output "bucket_policy" {
   value = provider::iamencode::policy_strict({
     Version = "2012-10-17"

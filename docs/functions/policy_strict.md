@@ -8,10 +8,11 @@ description: |-
 
 # function: policy_strict
 
-Like `policy`, but additionally validates the policy against the live [AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). Two extra checks run on top of the JSON Schema:
+Like `policy`, but additionally validates the policy against the live [AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). Three extra checks run on top of the JSON Schema:
 
 1. Non-wildcard `Action` / `NotAction` values (e.g. `s3:GetObject`) must name a real service and a real action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns (`*`, `s3:*`, `s3:Get*`, `*:GetObject`) aren't expanded and are accepted without catalog lookup.
 2. Every key inside `Condition` must be one that the statement's actions actually consume. Keys with the `aws:` prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is accepted on `s3:ListBucket` but rejected on `s3:GetObject`). When an action's name is itself a wildcard (e.g. `s3:*`, `s3:Get*`), the check falls back to the service-wide union of condition keys; statements whose service prefix is a wildcard (e.g. `*:GetObject`) or whose Action is the bare `*` skip the condition check entirely because the keyspace can't be narrowed.
+3. Every `Resource` ARN must match one of the ARN templates declared for at least one of the statement's actions. This catches mismatches like a bucket-only ARN (`arn:aws:s3:::my-bucket`) on `s3:GetObject` — that action only operates on object ARNs (`.../my-bucket/key`). The bare `*` Resource always passes; the same wildcard rules from check (2) apply to the action list. `NotResource` statements skip the check entirely. Known limitation: a handful of services use resource names that legitimately contain `/` even though their AWS-declared ARN templates have no literal `/` — CloudWatch Logs log-group names (`/aws/lambda/foo`) are the canonical case. Such ARNs will be flagged; use `Resource = "*"` or a wildcard in the ARN as a workaround.
 
 Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the provider process; a single plan therefore makes at most one HTTP call per referenced service. If the reference endpoint is unreachable the function fails — strict mode never silently passes a policy it couldn't actually verify. Use `policy` instead when strict catalog validation isn't desired.
 
@@ -28,14 +29,18 @@ terraform {
   }
 }
 
-# policy_strict catches mistakes the schema alone cannot. Two examples:
+# policy_strict catches mistakes the schema alone cannot. Three examples:
 #
 #   - Replace "GetObject" with e.g. "Frobnicate":
-#       Statement[0]: unknown action "Frobnicate" for service "s3"
+#       Statement[1]: unknown action "Frobnicate" for service "s3"
 #
 #   - Move "s3:prefix" under the s3:GetObject statement:
-#       Statement[0]: condition key "s3:prefix" (under StringEquals)
+#       Statement[1]: condition key "s3:prefix" (under StringEquals)
 #         is not valid for the statement's actions
+#
+#   - Use a bucket-only ARN on the object-reading statement:
+#       Statement[1]: resource "arn:aws:s3:::my-bucket" does not match
+#         any ARN format for the statement's actions
 output "bucket_policy" {
   value = provider::iamencode::policy_strict({
     Version = "2012-10-17"

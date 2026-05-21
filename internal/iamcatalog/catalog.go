@@ -3,8 +3,10 @@
 // memory for the lifetime of the process. Within a single `terraform plan`
 // the provider process is long-lived, so each service is fetched at most once.
 //
-// Failures degrade gracefully: a network error returns ErrUnavailable so the
-// caller can skip catalog-based checks rather than fail the whole plan.
+// Errors surface as sentinels (ErrUnknownService, ErrUnavailable) and callers
+// pick the policy. The strict validator in this package surfaces both as hard
+// errors; other callers could choose to skip silently. Don't bake an "always
+// skip on ErrUnavailable" assumption into the API surface here.
 package iamcatalog
 
 import (
@@ -14,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,12 +35,17 @@ const (
 
 var (
 	// ErrUnknownService — the prefix is not present in the AWS service index.
-	// The caller should treat this as a validation failure (likely a typo).
+	// Almost always a typo. Callers decide whether to surface it as an error
+	// or absorb it (e.g. CheckPolicy reports it from checkOne but continues
+	// the per-statement loop so other checks still report their findings).
 	ErrUnknownService = errors.New("unknown AWS service prefix")
 
-	// ErrUnavailable — the catalog could not be fetched (network down, timeout,
-	// HTTP error). The caller should treat this as "skip catalog validation"
-	// rather than fail; the embedded schema still ran.
+	// ErrUnavailable — the catalog could not be fetched (network down,
+	// timeout, HTTP 4xx/5xx, malformed response). It's a sentinel; the policy
+	// is up to the caller. CheckPolicy surfaces it as a hard error — strict
+	// mode shouldn't silently pass a policy it couldn't actually verify —
+	// but a future caller could legitimately choose to skip catalog-based
+	// checks on ErrUnavailable instead. Don't assume one behavior here.
 	ErrUnavailable = errors.New("AWS service reference unavailable")
 )
 
@@ -56,6 +64,16 @@ type Service struct {
 	// for that specific action. A lookup miss means "no per-action restriction
 	// known," and callers should fall back to allKeys.
 	keysByAction map[string]map[string]struct{} // both lowercased
+
+	// arnsByAction maps lowercased action name → ARN-format regexes accepted
+	// for that action. An entry is always present for every known action
+	// (possibly empty, meaning "this action doesn't operate on a resource").
+	arnsByAction map[string][]*regexp.Regexp
+
+	// allArns is the union of every ARN format the service declares — used
+	// as the fallback when the action name is a wildcard (e.g. "s3:*") and
+	// we therefore can't narrow the resource types.
+	allArns []*regexp.Regexp
 }
 
 // HasAction reports whether the service exposes the given action.
@@ -166,10 +184,17 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		Actions []struct {
 			Name                string   `json:"Name"`
 			ActionConditionKeys []string `json:"ActionConditionKeys"`
+			Resources           []struct {
+				Name string `json:"Name"`
+			} `json:"Resources"`
 		} `json:"Actions"`
 		ConditionKeys []struct {
 			Name string `json:"Name"`
 		} `json:"ConditionKeys"`
+		Resources []struct {
+			Name       string   `json:"Name"`
+			ARNFormats []string `json:"ARNFormats"`
+		} `json:"Resources"`
 	}
 	if err := c.getJSON(ctx, url, &raw); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrUnavailable, prefix, err)
@@ -180,6 +205,22 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 	for _, ck := range raw.ConditionKeys {
 		allKeys[strings.ToLower(ck.Name)] = struct{}{}
 	}
+
+	// Compile each resource type's ARN templates once per service.
+	patternsByType := make(map[string][]*regexp.Regexp, len(raw.Resources))
+	allArns := make([]*regexp.Regexp, 0)
+	for _, r := range raw.Resources {
+		patterns := make([]*regexp.Regexp, 0, len(r.ARNFormats))
+		for _, tmpl := range r.ARNFormats {
+			if re := compileARNTemplate(tmpl); re != nil {
+				patterns = append(patterns, re)
+				allArns = append(allArns, re)
+			}
+		}
+		patternsByType[strings.ToLower(r.Name)] = patterns
+	}
+
+	arnsByAction := make(map[string][]*regexp.Regexp, len(raw.Actions))
 	for _, a := range raw.Actions {
 		la := strings.ToLower(a.Name)
 		actions[la] = struct{}{}
@@ -195,13 +236,90 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 			allKeys[lk] = struct{}{} // union into service-wide fallback
 		}
 		keysByAction[la] = set
+
+		// Same treatment for ARN patterns: always populate (possibly empty).
+		// Actions like sts:GetCallerIdentity have no Resources declaration;
+		// we want an empty slice rather than "missing" so callers can tell
+		// "this action is resourceless" from "we don't know."
+		ps := make([]*regexp.Regexp, 0)
+		for _, r := range a.Resources {
+			ps = append(ps, patternsByType[strings.ToLower(r.Name)]...)
+		}
+		arnsByAction[la] = ps
 	}
 	return &Service{
 		Name:         raw.Name,
 		actions:      actions,
 		allKeys:      allKeys,
 		keysByAction: keysByAction,
+		arnsByAction: arnsByAction,
+		allArns:      allArns,
 	}, nil
+}
+
+// compileARNTemplate turns an AWS service-reference ARN format like
+//
+//	arn:${Partition}:s3:::${BucketName}/${ObjectName}
+//
+// into an anchored regex. Placeholder expansion follows two rules:
+//
+//   - Most placeholders compile to [^:/]* — they should not span ARN
+//     separators. This is what lets the bucket template
+//     "arn:${Partition}:s3:::${BucketName}" reject an object ARN like
+//     "arn:aws:s3:::bucket/key": the bucket placeholder doesn't allow
+//     the slash.
+//
+//   - The final placeholder in a template that contains at least one
+//     literal "/" compiles to ".*" — that's where S3 object keys or
+//     IAM role paths live (e.g. "${ObjectName}" in "...:::${B}/${O}",
+//     or "${RoleNameWithPath}" in "...:role/${RoleNameWithPath}"), and
+//     they can legitimately contain slashes.
+//
+// Known limitation: resource names that themselves contain "/" but whose
+// templates lack a "/" literal — CloudWatch Logs log groups are the
+// canonical example ("arn:aws:logs:r:a:log-group:/aws/lambda/foo") —
+// will not match. Users hitting that case can write Resource: "*" or
+// drop in a wildcard.
+//
+// A nil return means the template was malformed and should be ignored.
+func compileARNTemplate(tmpl string) *regexp.Regexp {
+	var placeholders [][2]int
+	for i := 0; i < len(tmpl); {
+		if i+1 < len(tmpl) && tmpl[i] == '$' && tmpl[i+1] == '{' {
+			end := strings.IndexByte(tmpl[i:], '}')
+			if end < 0 {
+				return nil
+			}
+			placeholders = append(placeholders, [2]int{i, i + end + 1})
+			i += end + 1
+			continue
+		}
+		i++
+	}
+	lastIdx := -1
+	if len(placeholders) > 0 {
+		lastIdx = len(placeholders) - 1
+	}
+
+	var b strings.Builder
+	b.WriteByte('^')
+	cursor := 0
+	for idx, p := range placeholders {
+		b.WriteString(regexp.QuoteMeta(tmpl[cursor:p[0]]))
+		if idx == lastIdx && strings.ContainsRune(tmpl[:p[0]], '/') {
+			b.WriteString(".*")
+		} else {
+			b.WriteString("[^:/]*")
+		}
+		cursor = p[1]
+	}
+	b.WriteString(regexp.QuoteMeta(tmpl[cursor:]))
+	b.WriteByte('$')
+	re, err := regexp.Compile(b.String())
+	if err != nil {
+		return nil
+	}
+	return re
 }
 
 func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {

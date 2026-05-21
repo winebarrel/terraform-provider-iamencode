@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
 // CheckPolicy walks the IAM policy and runs catalog-backed checks against the
 // AWS service reference. It is designed to be called *after* schema validation
-// has already passed, so structural shapes are assumed valid. Two checks run:
+// has already passed, so structural shapes are assumed valid. Three checks run:
 //
 //  1. Action existence. Non-wildcard Action/NotAction values like "s3:GetObject"
 //     are verified against the catalog — both the service prefix and the
@@ -26,6 +27,15 @@ import (
 //     wide ConditionKeys union, while a wildcard *service prefix* like
 //     "*:GetObject" or the bare "*" skip the condition check entirely
 //     because no single service catalog can be selected.
+//
+//  3. Resource ARNs. Each Resource value must match one of the ARN templates
+//     declared for at least one of the statement's actions (e.g. a bucket
+//     ARN doesn't pass on s3:GetObject — that action only operates on object
+//     ARNs). The bare "*" Resource always passes. Wildcards in Action follow
+//     the same scheme as the condition-key check: wildcard names use the
+//     service-wide union of ARN formats, while a wildcard service prefix or
+//     bare "*" Action skip the check entirely. NotResource statements skip
+//     the check too (their semantics invert the keyspace).
 //
 // Strings that are neither "*" nor "service:action" shape (e.g. plain
 // "GetObject" with no colon) are rejected outright — the JSON Schema only
@@ -62,6 +72,11 @@ func CheckPolicy(ctx context.Context, c *Catalog, policy any) error {
 			return err
 		}
 		issues = append(issues, condIssues...)
+		resIssues, err := checkResources(ctx, c, s, i)
+		if err != nil {
+			return err
+		}
+		issues = append(issues, resIssues...)
 	}
 	if len(issues) == 0 {
 		return nil
@@ -226,6 +241,89 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 			issues = append(issues, fmt.Sprintf(
 				"Statement[%d]: condition key %q (under %s) is not valid for the statement's actions",
 				stmtIdx, key, opName))
+		}
+	}
+	return issues, nil
+}
+
+// checkResources validates that each Resource ARN matches one of the ARN
+// templates declared by at least one of the statement's actions. Returns
+// (issues, err) where err is ErrUnavailable. Wildcards skip in the same
+// pattern as checkConditions: wildcard service prefix or bare "*" Action
+// skips the whole check; wildcard action name falls back to the service-
+// wide union of ARN formats. NotResource statements skip entirely — the
+// listed exclusions are the wrong domain to validate against.
+func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtIdx int) ([]string, error) {
+	resources := appendStringOrList(nil, stmt["Resource"])
+	if len(resources) == 0 {
+		return nil, nil
+	}
+	actions := appendStringOrList(nil, stmt["Action"])
+	if len(actions) == 0 {
+		return nil, nil
+	}
+
+	patterns := make([]*regexp.Regexp, 0)
+	resolvedAny := false
+	for _, a := range actions {
+		if a == "*" {
+			return nil, nil
+		}
+		prefix, name, ok := splitAction(a)
+		if !ok {
+			continue
+		}
+		if strings.ContainsRune(prefix, '*') {
+			return nil, nil
+		}
+		svc, err := c.Lookup(ctx, prefix)
+		switch {
+		case errors.Is(err, ErrUnavailable):
+			return nil, err
+		case errors.Is(err, ErrUnknownService):
+			continue
+		case err != nil || svc == nil:
+			return nil, err
+		}
+		resolvedAny = true
+		if strings.ContainsRune(name, '*') {
+			patterns = append(patterns, svc.allArns...)
+			continue
+		}
+		if perAction, has := svc.arnsByAction[strings.ToLower(name)]; has {
+			patterns = append(patterns, perAction...)
+		} else {
+			// Unknown action (typo). checkOne reports the action separately;
+			// fall back to the service-wide union here so a typo'd action
+			// doesn't also trigger a misleading "resource doesn't match"
+			// error against an empty pattern set.
+			patterns = append(patterns, svc.allArns...)
+		}
+	}
+	if !resolvedAny {
+		// Every action was malformed or referenced an unknown service. The
+		// ARN itself may well be valid for the *intended* action; flagging
+		// it would just be a misleading second error. checkOne already
+		// reports the action-side problems.
+		return nil, nil
+	}
+
+	var issues []string
+	for _, r := range resources {
+		if r == "*" {
+			continue // catch-all is always valid
+		}
+		matched := false
+		for _, p := range patterns {
+			if p.MatchString(r) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			issues = append(issues, fmt.Sprintf(
+				"Statement[%d]: resource %q does not match any ARN format for the statement's actions",
+				stmtIdx, r))
 		}
 	}
 	return issues, nil

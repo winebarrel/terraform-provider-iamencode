@@ -29,7 +29,7 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 		Summary: "policy_strict function",
 		MarkdownDescription: "Like `policy`, but additionally validates the policy against the live " +
 			"[AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). " +
-			"Two extra checks run on top of the JSON Schema:\n\n" +
+			"Three extra checks run on top of the JSON Schema:\n\n" +
 			"1. Non-wildcard `Action` / `NotAction` values (e.g. `s3:GetObject`) must name a real service and a real " +
 			"action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns (`*`, `s3:*`, `s3:Get*`, " +
 			"`*:GetObject`) aren't expanded and are accepted without catalog lookup.\n" +
@@ -38,7 +38,14 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"accepted on `s3:ListBucket` but rejected on `s3:GetObject`). When an action's name is itself a wildcard " +
 			"(e.g. `s3:*`, `s3:Get*`), the check falls back to the service-wide union of condition keys; statements " +
 			"whose service prefix is a wildcard (e.g. `*:GetObject`) or whose Action is the bare `*` skip the condition " +
-			"check entirely because the keyspace can't be narrowed.\n\n" +
+			"check entirely because the keyspace can't be narrowed.\n" +
+			"3. Every `Resource` ARN must match one of the ARN templates declared for at least one of the statement's " +
+			"actions. This catches mismatches like a bucket-only ARN (`arn:aws:s3:::my-bucket`) on `s3:GetObject` — that " +
+			"action only operates on object ARNs (`.../my-bucket/key`). The bare `*` Resource always passes; the same " +
+			"wildcard rules from check (2) apply to the action list. `NotResource` statements skip the check entirely. " +
+			"Known limitation: a handful of services use resource names that legitimately contain `/` even though their " +
+			"AWS-declared ARN templates have no literal `/` — CloudWatch Logs log-group names (`/aws/lambda/foo`) are the " +
+			"canonical case. Such ARNs will be flagged; use `Resource = \"*\"` or a wildcard in the ARN as a workaround.\n\n" +
 			"Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the " +
 			"provider process; a single plan therefore makes at most one HTTP call per referenced service. " +
 			"If the reference endpoint is unreachable the function fails — strict mode never silently passes a policy it " +
