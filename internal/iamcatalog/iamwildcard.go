@@ -15,13 +15,40 @@ import (
 // to compile or intersect.
 const maxResourceLen = 4096
 
-// matchesARN reports whether `value` is accepted by the compiled ARN
-// `template`. When strict regex matching fails and the value carries IAM
-// wildcards ('*' / '?'), it falls back to an IAM-aware check that treats
-// the value itself as a pattern and asks whether any concrete ARN
-// satisfies BOTH the user pattern and the template.
+// resourceMatcher prepares a single Resource value (possibly carrying
+// IAM wildcards) for testing against many ARN templates. The user-side
+// syntax.Prog is compiled once at construction; each subsequent match
+// against a template skips that work and either hits a strict regex
+// path or uses the cached prog directly in the intersection BFS.
+type resourceMatcher struct {
+	value    string
+	userProg *syntax.Prog // nil if value has no IAM wildcards, is over the size cap, or failed to compile
+}
+
+// newResourceMatcher builds a matcher for one Resource string. If the
+// value carries '*' or '?' and is under the maxResourceLen guard, we
+// pre-compile the user wildcard pattern; otherwise the matcher will
+// only use the strict regex path.
+func newResourceMatcher(value string) resourceMatcher {
+	rm := resourceMatcher{value: value}
+	if !strings.ContainsAny(value, "*?") {
+		return rm
+	}
+	if len(value) > maxResourceLen {
+		return rm
+	}
+	// Compile errors leave userProg nil; the fallback path then refuses
+	// to claim intersection rather than panicking on garbage input.
+	prog, _ := compileSyntaxProg(iamWildcardToRegex(value))
+	rm.userProg = prog
+	return rm
+}
+
+// match reports whether the resource value satisfies the compiled ARN
+// template. Strict regex first; the language-intersection fallback only
+// fires when the strict match misses and a user prog is available.
 //
-// This second pass is what lets policies like
+// The fallback is what lets policies like
 //
 //	"arn:aws:logs:*:*:*"
 //	"arn:aws:logs:r:a:log-group:/aws/lambda/foo:*"
@@ -30,20 +57,27 @@ const maxResourceLen = 4096
 // like ':log-group:' or ':log-stream:' the same way IAM expands it at
 // evaluation time, but the strict regex match treats '*' as a single
 // character and so falsely rejects them.
-//
-// The fallback is bounded — len(value) and the BFS visit count are both
-// capped — and fails closed (returns false) when a limit is hit.
-func matchesARN(template *regexp.Regexp, value string) bool {
-	if template.MatchString(value) {
+func (rm resourceMatcher) match(template *regexp.Regexp) bool {
+	if template.MatchString(rm.value) {
 		return true
 	}
-	if !strings.ContainsAny(value, "*?") {
+	if rm.userProg == nil {
 		return false
 	}
-	if len(value) > maxResourceLen {
+	tmplProg, err := cachedTemplateProg(template.String())
+	if err != nil {
 		return false
 	}
-	return regexIntersects(template.String(), iamWildcardToRegex(value))
+	return progsIntersect(tmplProg, rm.userProg)
+}
+
+// matchesARN is a one-shot convenience wrapper around resourceMatcher,
+// useful when the caller has a single (template, value) pair. Hot
+// callers that test one value against many templates should build a
+// resourceMatcher once and reuse it via match instead — that avoids
+// re-parsing the user wildcard pattern per template.
+func matchesARN(template *regexp.Regexp, value string) bool {
+	return newResourceMatcher(value).match(template)
 }
 
 // iamWildcardToRegex turns an IAM-wildcard string into an anchored regex

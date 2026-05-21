@@ -397,9 +397,10 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		if r == "*" {
 			continue // catch-all is always valid
 		}
+		rm := newResourceMatcher(r)
 		matched := false
 		for _, p := range patterns {
-			if matchesARN(p, r) {
+			if rm.match(p) {
 				matched = true
 				break
 			}
