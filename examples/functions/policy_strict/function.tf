@@ -6,20 +6,33 @@ terraform {
   }
 }
 
-# policy_strict catches Action typos that the schema alone cannot. Replace
-# "GetObject" with e.g. "Frobnicate" to see the strict check reject it:
+# policy_strict catches mistakes the schema alone cannot. Two examples:
 #
-#   Error: invalid IAM policy:
-#     Statement[0]: unknown action "Frobnicate" for service "s3"
+#   - Replace "GetObject" with e.g. "Frobnicate":
+#       Statement[0]: unknown action "Frobnicate" for service "s3"
+#
+#   - Move "s3:prefix" under the s3:GetObject statement:
+#       Statement[0]: condition key "s3:prefix" (under StringEquals)
+#         is not valid for the statement's actions
 output "bucket_policy" {
   value = provider::iamencode::policy_strict({
     Version = "2012-10-17"
     Statement = [
       {
+        Sid      = "ListAllowedPrefix"
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = "arn:aws:s3:::my-bucket/*"
-      }
+        Action   = "s3:ListBucket"
+        Resource = "arn:aws:s3:::my-bucket"
+        Condition = {
+          StringEquals = { "s3:prefix" = "logs/" }
+        }
+      },
+      {
+        Sid      = "ReadObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::my-bucket/logs/*"
+      },
     ]
   })
 }

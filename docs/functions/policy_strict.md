@@ -8,7 +8,12 @@ description: |-
 
 # function: policy_strict
 
-Like `policy`, but additionally checks every Action / NotAction against the live [AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the provider process; a single plan therefore makes at most one HTTP call per referenced service. If the reference endpoint is unreachable the catalog check is skipped (schema validation still runs).
+Like `policy`, but additionally validates the policy against the live [AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). Two extra checks run on top of the JSON Schema:
+
+1. Non-wildcard `Action` / `NotAction` values (e.g. `s3:GetObject`) must name a real service and a real action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns (`*`, `s3:*`, `s3:Get*`, `*:GetObject`) aren't expanded and are accepted without catalog lookup.
+2. Every key inside `Condition` must be one that the statement's actions actually consume. Keys with the `aws:` prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is accepted on `s3:ListBucket` but rejected on `s3:GetObject`). When an action's name is itself a wildcard (e.g. `s3:*`, `s3:Get*`), the check falls back to the service-wide union of condition keys; statements whose service prefix is a wildcard (e.g. `*:GetObject`) or whose Action is the bare `*` skip the condition check entirely because the keyspace can't be narrowed.
+
+Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the provider process; a single plan therefore makes at most one HTTP call per referenced service. If the reference endpoint is unreachable the function fails — strict mode never silently passes a policy it couldn't actually verify. Use `policy` instead when strict catalog validation isn't desired.
 
 The endpoint defaults to `https://servicereference.us-east-1.amazonaws.com` and can be overridden by setting the `IAMENCODE_SERVICEREF_ENDPOINT` environment variable when Terraform is run — useful for pointing at a corporate mirror or, in tests, a local fake.
 
@@ -23,20 +28,33 @@ terraform {
   }
 }
 
-# policy_strict catches Action typos that the schema alone cannot. Replace
-# "GetObject" with e.g. "Frobnicate" to see the strict check reject it:
+# policy_strict catches mistakes the schema alone cannot. Two examples:
 #
-#   Error: invalid IAM policy:
-#     Statement[0]: unknown action "Frobnicate" for service "s3"
+#   - Replace "GetObject" with e.g. "Frobnicate":
+#       Statement[0]: unknown action "Frobnicate" for service "s3"
+#
+#   - Move "s3:prefix" under the s3:GetObject statement:
+#       Statement[0]: condition key "s3:prefix" (under StringEquals)
+#         is not valid for the statement's actions
 output "bucket_policy" {
   value = provider::iamencode::policy_strict({
     Version = "2012-10-17"
     Statement = [
       {
+        Sid      = "ListAllowedPrefix"
         Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = "arn:aws:s3:::my-bucket/*"
-      }
+        Action   = "s3:ListBucket"
+        Resource = "arn:aws:s3:::my-bucket"
+        Condition = {
+          StringEquals = { "s3:prefix" = "logs/" }
+        }
+      },
+      {
+        Sid      = "ReadObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::my-bucket/logs/*"
+      },
     ]
   })
 }

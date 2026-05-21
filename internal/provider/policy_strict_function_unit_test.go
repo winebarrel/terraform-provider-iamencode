@@ -145,12 +145,15 @@ func TestPolicyStrictFunction_Err_SchemaFailsBeforeCatalog(t *testing.T) {
 	assert.Contains(t, resp.Error.Error(), "invalid IAM policy")
 }
 
-// When the catalog endpoint is unreachable, the function must still succeed
-// for an otherwise-valid policy — graceful degrade by design.
-func TestPolicyStrictFunction_OK_CatalogUnavailable(t *testing.T) {
+// If the catalog endpoint is unreachable, policy_strict must say so rather
+// than quietly return the policy as if validation had passed. The whole
+// point of strict mode is the catalog check, so swallowing the failure
+// would let typo'd policies slip past in airgapped/misconfigured runs.
+func TestPolicyStrictFunction_Err_CatalogUnavailable(t *testing.T) {
 	cat := iamcatalog.New("http://127.0.0.1:1")
 	resp := runStrict(t, cat, policyObject(t, "s3:GetObject"))
-	assert.Nil(t, resp.Error)
+	require.NotNil(t, resp.Error)
+	assert.Contains(t, resp.Error.Error(), "AWS service reference unavailable")
 }
 
 func TestPolicyStrictFunction_Err_NoArguments(t *testing.T) {
@@ -179,9 +182,11 @@ func TestPolicyStrictFunction_Err_MarshalFailsOnInfinity(t *testing.T) {
 	bf, _, err := big.ParseFloat("1e1000", 10, 53, big.ToNearestEven)
 	require.NoError(t, err)
 
+	// Use an aws:* key — the strict catalog accepts all aws-prefixed globals,
+	// so the condition-key check passes and we reach the json.Marshal step.
 	condInner, diags := basetypes.NewObjectValue(
-		map[string]attr.Type{"k": basetypes.NumberType{}},
-		map[string]attr.Value{"k": basetypes.NewNumberValue(bf)},
+		map[string]attr.Type{"aws:EpochTime": basetypes.NumberType{}},
+		map[string]attr.Value{"aws:EpochTime": basetypes.NewNumberValue(bf)},
 	)
 	require.False(t, diags.HasError(), diags)
 	cond, diags := basetypes.NewObjectValue(

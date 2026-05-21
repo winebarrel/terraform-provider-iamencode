@@ -67,6 +67,73 @@ func newFakeServer(t *testing.T, services map[string][]string) *fakeServer {
 	return fs
 }
 
+// fakeServiceData lets newFakeServerWithKeys describe a richer service shape
+// (per-action condition keys + service-level keys) for condition-key tests.
+// Both arrays are always emitted in the response — empty slices serialize as
+// empty JSON arrays, which the catalog parser handles identically to absent.
+type fakeServiceData struct {
+	actions          map[string][]string // action name → ActionConditionKeys
+	svcConditionKeys []string            // service-level ConditionKeys[]
+}
+
+func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *fakeServer {
+	t.Helper()
+	fs := &fakeServer{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fs.bump(r.URL.Path)
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, "[")
+		first := true
+		for prefix := range services {
+			if !first {
+				fmt.Fprint(w, ",")
+			}
+			first = false
+			fmt.Fprintf(w, `{"service":%q,"url":%q}`, prefix, fs.server.URL+"/v1/"+prefix+"/"+prefix+".json")
+		}
+		fmt.Fprint(w, "]")
+	})
+	for prefix, data := range services {
+		path := "/v1/" + prefix + "/" + prefix + ".json"
+		name := prefix
+		d := data
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			fs.bump(r.URL.Path)
+			fmt.Fprintf(w, `{"Name":%q,"Actions":[`, name)
+			i := 0
+			for action, keys := range d.actions {
+				if i > 0 {
+					fmt.Fprint(w, ",")
+				}
+				i++
+				fmt.Fprintf(w, `{"Name":%q,"ActionConditionKeys":[`, action)
+				for j, k := range keys {
+					if j > 0 {
+						fmt.Fprint(w, ",")
+					}
+					fmt.Fprintf(w, "%q", k)
+				}
+				fmt.Fprint(w, "]}")
+			}
+			fmt.Fprint(w, `],"ConditionKeys":[`)
+			for j, k := range d.svcConditionKeys {
+				if j > 0 {
+					fmt.Fprint(w, ",")
+				}
+				fmt.Fprintf(w, `{"Name":%q}`, k)
+			}
+			fmt.Fprint(w, "]}")
+		})
+	}
+	fs.server = httptest.NewServer(mux)
+	t.Cleanup(fs.server.Close)
+	return fs
+}
+
 func (fs *fakeServer) bump(path string) {
 	v, _ := fs.hits.LoadOrStore(path, new(atomic.Int64))
 	v.(*atomic.Int64).Add(1)
