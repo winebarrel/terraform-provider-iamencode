@@ -1295,11 +1295,12 @@ func TestCheckPolicy_Resource_AllActionsMalformed_SkipsCheck(t *testing.T) {
 
 // withServiceLevelAction wires up a service with one normal action (operates
 // on a "thing" resource) and one service-level action whose service-reference
-// Resources entry is absent. The fake server currently always emits
-// "Resources":[], not null — but Go's json package decodes both forms into
-// the same nil slice, so the per-action pattern set ends up identical to the
-// real iam:ListUsers shape and the catalog code path is the one the test
-// actually exercises.
+// Resources entry is absent. The fake server emits "Resources":[]; the live
+// AWS catalog emits "Resources":null or omits the field entirely. encoding/
+// json decodes [] to an empty (non-nil) slice and null/missing to nil, but
+// our handling only looks at len(), where both shapes are equivalent — so
+// the test exercises exactly the same code path checkResources hits in
+// production for iam:ListUsers and friends.
 func withServiceLevelAction(t *testing.T) *Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
@@ -1310,9 +1311,10 @@ func withServiceLevelAction(t *testing.T) *Catalog {
 			},
 			actionResources: map[string][]string{
 				"WriteThing": {"thing"},
-				// "ListAllThings" omitted → "Resources":[] in the fake JSON,
-				// which decodes to the same nil slice as the AWS reference's
-				// "Resources":null (or missing field).
+				// "ListAllThings" omitted → "Resources":[] in the fake JSON.
+				// The live catalog uses "Resources":null for the same case;
+				// both decode to a zero-length slice, which is all the
+				// per-action ARN check looks at.
 			},
 			resources: map[string][]string{
 				"thing": {"arn:${Partition}:svc:::${Name}"},
