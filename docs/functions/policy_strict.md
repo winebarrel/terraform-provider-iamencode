@@ -10,8 +10,8 @@ description: |-
 
 Like `policy`, but additionally validates the policy against the live [AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). Two extra checks run on top of the JSON Schema:
 
-1. Every `Action` / `NotAction` must name a real service and a real action (catches typos like `s3:Frobnicate`).
-2. Every key inside `Condition` must be one that the statement's actions actually consume. Keys with the `aws:` prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is accepted on `s3:ListBucket` but rejected on `s3:GetObject`).
+1. Non-wildcard `Action` / `NotAction` values (e.g. `s3:GetObject`) must name a real service and a real action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns (`*`, `s3:*`, `s3:Get*`, `*:GetObject`) aren't expanded and are accepted without catalog lookup.
+2. Every key inside `Condition` must be one that the statement's actions actually consume. Keys with the `aws:` prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is accepted on `s3:ListBucket` but rejected on `s3:GetObject`). When an action's name is itself a wildcard (e.g. `s3:*`, `s3:Get*`), the check falls back to the service-wide union of condition keys; statements whose service prefix is a wildcard (e.g. `*:GetObject`) or whose Action is the bare `*` skip the condition check entirely because the keyspace can't be narrowed.
 
 Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the provider process; a single plan therefore makes at most one HTTP call per referenced service. If the reference endpoint is unreachable the function fails — strict mode never silently passes a policy it couldn't actually verify. Use `policy` instead when strict catalog validation isn't desired.
 

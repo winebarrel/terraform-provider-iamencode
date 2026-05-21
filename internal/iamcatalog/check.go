@@ -11,20 +11,25 @@ import (
 // AWS service reference. It is designed to be called *after* schema validation
 // has already passed, so structural shapes are assumed valid. Two checks run:
 //
-//  1. Every Action / NotAction names a real service and a real action.
+//  1. Action existence. Non-wildcard Action/NotAction values like "s3:GetObject"
+//     are verified against the catalog — both the service prefix and the
+//     action name must exist. Any wildcard ("*", "s3:*", "s3:Get*",
+//     "*:GetObject") is accepted without catalog lookup; we don't try to
+//     expand patterns against the catalog.
 //
-//  2. Every key inside Condition is one that the statement's actions actually
-//     consume. Keys with the "aws:" prefix are AWS-global and always allowed;
-//     service-specific keys must appear in the union of allowed keys for the
-//     statement's actions (per-action ActionConditionKeys, falling back to
-//     the service-wide ConditionKeys list when the action is a wildcard).
+//  2. Condition keys. Each key under Condition is checked against the union
+//     of condition keys the statement's actions consume. Keys with the
+//     "aws:" prefix are AWS-global and always pass; service-specific keys
+//     are looked up per action (so "s3:prefix" passes on "s3:ListBucket"
+//     but fails on "s3:GetObject"). Wildcards behave asymmetrically here:
+//     a wildcard *name* like "s3:*" or "s3:Get*" falls back to the service-
+//     wide ConditionKeys union, while a wildcard *service prefix* like
+//     "*:GetObject" or the bare "*" skip the condition check entirely
+//     because no single service catalog can be selected.
 //
-// Wildcard tokens (the bare "*", or "*" anywhere within a service:action pair)
-// are out of scope: pattern expansion against the catalog isn't implemented,
-// so we don't try to validate them. Strings that are neither "*" nor
-// "service:action" shape are rejected outright — the JSON Schema only checks
-// that Action is a string, so it's our job here to catch values like
-// "GetObject" (missing the service prefix).
+// Strings that are neither "*" nor "service:action" shape (e.g. plain
+// "GetObject" with no colon) are rejected outright — the JSON Schema only
+// checks that Action is a string, so this is where we catch missing prefixes.
 //
 // Errors surface, they don't get swallowed:
 //   - ErrUnknownService (a typo'd prefix) — reported per-action; the rest of
@@ -142,8 +147,14 @@ func appendStringOrList(out []string, v any) []string {
 
 // checkConditions validates that every key in Statement.Condition is one that
 // the statement's actions actually consume. Returns (issues, err). A non-nil
-// err is ErrUnavailable; CheckPolicy bubbles it up directly. Wildcard actions
-// (bare "*" or "*:Foo") yield no issues — pattern expansion is out of scope.
+// err is ErrUnavailable; CheckPolicy bubbles it up directly.
+//
+// Wildcards are handled asymmetrically by design:
+//   - Bare "*" or a wildcard service prefix ("*:GetObject") skip the whole
+//     condition check — no single service catalog can be selected.
+//   - A wildcard action name ("s3:*", "s3:Get*") DOES proceed: we look up
+//     the service and use its service-wide ConditionKeys union (svc.allKeys)
+//     in place of per-action keys.
 //
 // Only positive Action entries drive the keyspace. A NotAction statement
 // means "every IAM action except these," so validating its Condition keys
