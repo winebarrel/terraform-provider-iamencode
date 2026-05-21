@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"math"
 	"math/big"
 	"testing"
 
@@ -116,6 +117,62 @@ func TestRun_NoArguments(t *testing.T) {
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
 	PolicyFunction{}.Run(context.Background(), req, resp)
 	assert.NotNil(t, resp.Error)
+}
+
+// HCL lets users write huge literals like 1e1000. big.Float represents those
+// faithfully, but Float64() collapses them to ±Inf, which json refuses. The
+// function must surface that as a function error rather than silently emit
+// truncated/empty output.
+func TestRun_MarshalFailsOnInfinityNumber(t *testing.T) {
+	bf, _, err := big.ParseFloat("1e1000", 10, 53, big.ToNearestEven)
+	require.NoError(t, err)
+	require.True(t, math.IsInf(mustFloat(bf), 1), "setup: 1e1000 should collapse to +Inf")
+
+	// Wrap in a minimal policy shape so it survives schema validation: a Number
+	// inside Condition.NumericLessThan is structurally fine for the schema.
+	condInner, diags := basetypes.NewObjectValue(
+		map[string]attr.Type{"k": basetypes.NumberType{}},
+		map[string]attr.Value{"k": basetypes.NewNumberValue(bf)},
+	)
+	require.False(t, diags.HasError(), diags)
+	cond, diags := basetypes.NewObjectValue(
+		map[string]attr.Type{"NumericLessThan": condInner.Type(context.Background())},
+		map[string]attr.Value{"NumericLessThan": condInner},
+	)
+	require.False(t, diags.HasError(), diags)
+	stmt, diags := basetypes.NewObjectValue(
+		map[string]attr.Type{
+			"Effect":    basetypes.StringType{},
+			"Action":    basetypes.StringType{},
+			"Resource":  basetypes.StringType{},
+			"Condition": cond.Type(context.Background()),
+		},
+		map[string]attr.Value{
+			"Effect":    basetypes.NewStringValue("Allow"),
+			"Action":    basetypes.NewStringValue("s3:GetObject"),
+			"Resource":  basetypes.NewStringValue("*"),
+			"Condition": cond,
+		},
+	)
+	require.False(t, diags.HasError(), diags)
+	tup, diags := basetypes.NewTupleValue([]attr.Type{stmt.Type(context.Background())}, []attr.Value{stmt})
+	require.False(t, diags.HasError(), diags)
+	policy, diags := basetypes.NewObjectValue(
+		map[string]attr.Type{"Version": basetypes.StringType{}, "Statement": tup.Type(context.Background())},
+		map[string]attr.Value{"Version": basetypes.NewStringValue("2012-10-17"), "Statement": tup},
+	)
+	require.False(t, diags.HasError(), diags)
+
+	req := function.RunRequest{Arguments: function.NewArgumentsData([]attr.Value{basetypes.NewDynamicValue(policy)})}
+	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
+	PolicyFunction{}.Run(context.Background(), req, resp)
+	require.NotNil(t, resp.Error)
+	assert.Contains(t, resp.Error.Error(), "encode IAM policy")
+}
+
+func mustFloat(bf *big.Float) float64 {
+	f, _ := bf.Float64()
+	return f
 }
 
 // Run must surface the error from attrValueToNative as a function argument error.
