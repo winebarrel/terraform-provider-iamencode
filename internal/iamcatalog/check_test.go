@@ -300,6 +300,48 @@ func TestCheckPolicy_ConditionKey_BareStarActionSkipsCheck(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_ConditionKey_NetworkFailure_FromCheckConditionsPath(t *testing.T) {
+	// Wildcard action names skip checkOne's Lookup, so the first time the
+	// catalog is consulted for this prefix is inside checkConditions. If
+	// the catalog is unreachable that error must propagate out of
+	// CheckPolicy — exercising the err branch in checkConditions itself.
+	c := New("http://127.0.0.1:1")
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:Get*",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"s3:prefix": "logs/"},
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnavailable)
+}
+
+func TestCheckPolicy_ConditionKey_UnknownActionFallsBackToServiceKeys(t *testing.T) {
+	// checkOne flags the unknown action; checkConditions can't find the
+	// action in keysByAction and so falls back to svc.allKeys. Any key
+	// present in that union must still pass.
+	c := withConditionKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:NotARealAction",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"s3:prefix": "logs/"}, // in svc.allKeys
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown action "NotARealAction"`)
+	assert.NotContains(t, err.Error(), "condition key")
+}
+
 func TestCheckPolicy_ConditionKey_NotActionStatement_SkipsConditionCheck(t *testing.T) {
 	// NotAction means "every IAM action EXCEPT these," so the listed entries
 	// don't define the keyspace the way Action entries do. Validating
