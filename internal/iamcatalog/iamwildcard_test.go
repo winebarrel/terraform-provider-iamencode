@@ -1,6 +1,8 @@
 package iamcatalog
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,6 +25,17 @@ func TestIamWildcardToRegex(t *testing.T) {
 			assert.Equal(t, tc.want, iamWildcardToRegex(tc.in))
 		})
 	}
+}
+
+func TestMatchesARN_OverlongValueFailsClosed(t *testing.T) {
+	// Even if a runaway wildcarded ARN string would have intersected the
+	// template, matchesARN must bail out before paying for the BFS.
+	// "fails closed" here means "returns false." The template here
+	// requires a ":sub:" literal that the value lacks, so strict match
+	// fails and we'd otherwise enter the BFS fallback.
+	tmpl := regexp.MustCompile(`^arn:[^:]*:svc:[^:]*:[^:]*:group:[^:]*:sub:.*$`)
+	value := "arn:aws:svc:r:a:group:" + strings.Repeat("*", maxResourceLen+1)
+	assert.False(t, matchesARN(tmpl, value))
 }
 
 func TestRegexIntersects(t *testing.T) {

@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// maxResourceLen caps the user-supplied Resource value length we feed into
+// the intersection check. AWS IAM caps ARN strings at 2048 bytes; anything
+// longer is almost certainly a runaway expression and we want to fail
+// closed rather than pay an unbounded BFS for it.
+const maxResourceLen = 4096
+
 // matchesARN reports whether `value` is accepted by the compiled ARN
 // `template`. When strict regex matching fails and the value carries IAM
 // wildcards ('*' / '?'), it falls back to an IAM-aware check that treats
@@ -21,6 +27,9 @@ import (
 // like ':log-group:' or ':log-stream:' the same way IAM expands it at
 // evaluation time, but the strict regex match treats '*' as a single
 // character and so falsely rejects them.
+//
+// The fallback is bounded — len(value) and the BFS visit count are both
+// capped — and fails closed (returns false) when a limit is hit.
 func matchesARN(template *regexp.Regexp, value string) bool {
 	if template.MatchString(value) {
 		return true
@@ -28,13 +37,18 @@ func matchesARN(template *regexp.Regexp, value string) bool {
 	if !strings.ContainsAny(value, "*?") {
 		return false
 	}
+	if len(value) > maxResourceLen {
+		return false
+	}
 	return regexIntersects(template.String(), iamWildcardToRegex(value))
 }
 
 // iamWildcardToRegex turns an IAM-wildcard string into an anchored regex
-// source: '*' → ".*" (any chars, ':' and '/' included — IAM does not
-// restrict the wildcard), '?' → "." (exactly one char), other runes
-// QuoteMeta'd. The result is always a syntactically valid regex.
+// source: '*' → ".*" (any chars except newline, ':' and '/' included),
+// '?' → "." (exactly one char, also newline-excluding), other runes
+// QuoteMeta'd. Newline exclusion mirrors Go's default Perl flags — both
+// sides of the intersection use the same convention, and real ARN values
+// never contain newlines, so the omission is safe.
 func iamWildcardToRegex(s string) string {
 	var b strings.Builder
 	b.WriteByte('^')
@@ -79,6 +93,12 @@ func compileSyntaxProg(src string) (*syntax.Prog, error) {
 // counters into the two compiled syntax.Prog inputs.
 type pcPair struct{ a, b uint32 }
 
+// maxProductStates caps the size of the BFS visit set. The product state
+// space is O(|progA|·|progB|); a malicious or accidentally large user
+// pattern could in theory drive it far past anything we'd see in practice.
+// When the cap is hit we bail out and return false (fail closed).
+const maxProductStates = 100_000
+
 // progsIntersect runs BFS over the product NFA. Returning true means some
 // input string drives both programs to their accept (InstMatch) state at
 // the same time; that string is a witness for L(pa) ∩ L(pb).
@@ -94,7 +114,18 @@ func progsIntersect(pa, pb *syntax.Prog) bool {
 	queue := []pcPair{{uint32(pa.Start), uint32(pb.Start)}}
 	seen[queue[0]] = struct{}{}
 
+	enqueue := func(np pcPair) {
+		if _, ok := seen[np]; ok {
+			return
+		}
+		seen[np] = struct{}{}
+		queue = append(queue, np)
+	}
+
 	for len(queue) > 0 {
+		if len(seen) > maxProductStates {
+			return false
+		}
 		s := queue[0]
 		queue = queue[1:]
 		ia := pa.Inst[s.a]
@@ -105,41 +136,29 @@ func progsIntersect(pa, pb *syntax.Prog) bool {
 		}
 
 		// Epsilon transitions can fire on either side independently.
-		for _, n := range epsilonOuts(ia) {
-			np := pcPair{n, s.b}
-			if _, ok := seen[np]; !ok {
-				seen[np] = struct{}{}
-				queue = append(queue, np)
-			}
+		// Inline the per-Op branching so we don't allocate a fresh
+		// slice for each dequeued state.
+		switch ia.Op {
+		case syntax.InstNop, syntax.InstCapture, syntax.InstEmptyWidth:
+			enqueue(pcPair{ia.Out, s.b})
+		case syntax.InstAlt, syntax.InstAltMatch:
+			enqueue(pcPair{ia.Out, s.b})
+			enqueue(pcPair{ia.Arg, s.b})
 		}
-		for _, n := range epsilonOuts(ib) {
-			np := pcPair{s.a, n}
-			if _, ok := seen[np]; !ok {
-				seen[np] = struct{}{}
-				queue = append(queue, np)
-			}
+		switch ib.Op {
+		case syntax.InstNop, syntax.InstCapture, syntax.InstEmptyWidth:
+			enqueue(pcPair{s.a, ib.Out})
+		case syntax.InstAlt, syntax.InstAltMatch:
+			enqueue(pcPair{s.a, ib.Out})
+			enqueue(pcPair{s.a, ib.Arg})
 		}
 
 		// Char-consuming step: both sides must accept a common rune.
 		if isCharOp(ia.Op) && isCharOp(ib.Op) && runesOverlap(ia, ib) {
-			np := pcPair{ia.Out, ib.Out}
-			if _, ok := seen[np]; !ok {
-				seen[np] = struct{}{}
-				queue = append(queue, np)
-			}
+			enqueue(pcPair{ia.Out, ib.Out})
 		}
 	}
 	return false
-}
-
-func epsilonOuts(i syntax.Inst) []uint32 {
-	switch i.Op {
-	case syntax.InstNop, syntax.InstCapture, syntax.InstEmptyWidth:
-		return []uint32{i.Out}
-	case syntax.InstAlt, syntax.InstAltMatch:
-		return []uint32{i.Out, i.Arg}
-	}
-	return nil
 }
 
 func isCharOp(op syntax.InstOp) bool {
