@@ -68,12 +68,15 @@ func newFakeServer(t *testing.T, services map[string][]string) *fakeServer {
 }
 
 // fakeServiceData lets newFakeServerWithKeys describe a richer service shape
-// (per-action condition keys + service-level keys) for condition-key tests.
-// Both arrays are always emitted in the response — empty slices serialize as
-// empty JSON arrays, which the catalog parser handles identically to absent.
+// (per-action condition keys + per-action resource types + service-level keys
+// + resource type ARN templates) for the checkConditions / checkResources
+// tests. Every field is optional; absent or empty maps serialize as empty
+// JSON arrays, which the catalog parser handles identically to truly absent.
 type fakeServiceData struct {
-	actions          map[string][]string // action name → ActionConditionKeys
+	actions          map[string][]string // action → ActionConditionKeys
+	actionResources  map[string][]string // action → list of Resources[].Name
 	svcConditionKeys []string            // service-level ConditionKeys[]
+	resources        map[string][]string // resource type → ARN format templates
 }
 
 func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *fakeServer {
@@ -117,6 +120,13 @@ func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *f
 					}
 					fmt.Fprintf(w, "%q", k)
 				}
+				fmt.Fprint(w, `],"Resources":[`)
+				for j, rt := range d.actionResources[action] {
+					if j > 0 {
+						fmt.Fprint(w, ",")
+					}
+					fmt.Fprintf(w, `{"Name":%q}`, rt)
+				}
 				fmt.Fprint(w, "]}")
 			}
 			fmt.Fprint(w, `],"ConditionKeys":[`)
@@ -125,6 +135,22 @@ func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *f
 					fmt.Fprint(w, ",")
 				}
 				fmt.Fprintf(w, `{"Name":%q}`, k)
+			}
+			fmt.Fprint(w, `],"Resources":[`)
+			j := 0
+			for rtype, formats := range d.resources {
+				if j > 0 {
+					fmt.Fprint(w, ",")
+				}
+				j++
+				fmt.Fprintf(w, `{"Name":%q,"ARNFormats":[`, rtype)
+				for k, f := range formats {
+					if k > 0 {
+						fmt.Fprint(w, ",")
+					}
+					fmt.Fprintf(w, "%q", f)
+				}
+				fmt.Fprint(w, "]}")
 			}
 			fmt.Fprint(w, "]}")
 		})

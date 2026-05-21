@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,16 @@ type Service struct {
 	// for that specific action. A lookup miss means "no per-action restriction
 	// known," and callers should fall back to allKeys.
 	keysByAction map[string]map[string]struct{} // both lowercased
+
+	// arnsByAction maps lowercased action name → ARN-format regexes accepted
+	// for that action. An entry is always present for every known action
+	// (possibly empty, meaning "this action doesn't operate on a resource").
+	arnsByAction map[string][]*regexp.Regexp
+
+	// allArns is the union of every ARN format the service declares — used
+	// as the fallback when the action name is a wildcard (e.g. "s3:*") and
+	// we therefore can't narrow the resource types.
+	allArns []*regexp.Regexp
 }
 
 // HasAction reports whether the service exposes the given action.
@@ -166,10 +177,17 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		Actions []struct {
 			Name                string   `json:"Name"`
 			ActionConditionKeys []string `json:"ActionConditionKeys"`
+			Resources           []struct {
+				Name string `json:"Name"`
+			} `json:"Resources"`
 		} `json:"Actions"`
 		ConditionKeys []struct {
 			Name string `json:"Name"`
 		} `json:"ConditionKeys"`
+		Resources []struct {
+			Name       string   `json:"Name"`
+			ARNFormats []string `json:"ARNFormats"`
+		} `json:"Resources"`
 	}
 	if err := c.getJSON(ctx, url, &raw); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrUnavailable, prefix, err)
@@ -180,6 +198,22 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 	for _, ck := range raw.ConditionKeys {
 		allKeys[strings.ToLower(ck.Name)] = struct{}{}
 	}
+
+	// Compile each resource type's ARN templates once per service.
+	patternsByType := make(map[string][]*regexp.Regexp, len(raw.Resources))
+	allArns := make([]*regexp.Regexp, 0)
+	for _, r := range raw.Resources {
+		patterns := make([]*regexp.Regexp, 0, len(r.ARNFormats))
+		for _, tmpl := range r.ARNFormats {
+			if re := compileARNTemplate(tmpl); re != nil {
+				patterns = append(patterns, re)
+				allArns = append(allArns, re)
+			}
+		}
+		patternsByType[strings.ToLower(r.Name)] = patterns
+	}
+
+	arnsByAction := make(map[string][]*regexp.Regexp, len(raw.Actions))
 	for _, a := range raw.Actions {
 		la := strings.ToLower(a.Name)
 		actions[la] = struct{}{}
@@ -195,13 +229,58 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 			allKeys[lk] = struct{}{} // union into service-wide fallback
 		}
 		keysByAction[la] = set
+
+		// Same treatment for ARN patterns: always populate (possibly empty).
+		// Actions like sts:GetCallerIdentity have no Resources declaration;
+		// we want an empty slice rather than "missing" so callers can tell
+		// "this action is resourceless" from "we don't know."
+		ps := make([]*regexp.Regexp, 0)
+		for _, r := range a.Resources {
+			ps = append(ps, patternsByType[strings.ToLower(r.Name)]...)
+		}
+		arnsByAction[la] = ps
 	}
 	return &Service{
 		Name:         raw.Name,
 		actions:      actions,
 		allKeys:      allKeys,
 		keysByAction: keysByAction,
+		arnsByAction: arnsByAction,
+		allArns:      allArns,
 	}, nil
+}
+
+// compileARNTemplate turns an AWS service-reference ARN format like
+//
+//	arn:${Partition}:s3:::${BucketName}/${ObjectName}
+//
+// into an anchored regex. Placeholders become [^:]* — IAM ARN segments are
+// colon-separated and the placeholders never span them in AWS's templates,
+// so this matches every legitimate ARN we've seen without resorting to
+// full URI-style parsing. A nil return means the template was malformed
+// and should be ignored.
+func compileARNTemplate(tmpl string) *regexp.Regexp {
+	var b strings.Builder
+	b.WriteByte('^')
+	for i := 0; i < len(tmpl); {
+		if i+1 < len(tmpl) && tmpl[i] == '$' && tmpl[i+1] == '{' {
+			end := strings.IndexByte(tmpl[i:], '}')
+			if end < 0 {
+				return nil
+			}
+			b.WriteString("[^:]*")
+			i += end + 1
+			continue
+		}
+		b.WriteString(regexp.QuoteMeta(string(tmpl[i])))
+		i++
+	}
+	b.WriteByte('$')
+	re, err := regexp.Compile(b.String())
+	if err != nil {
+		return nil
+	}
+	return re
 }
 
 func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {

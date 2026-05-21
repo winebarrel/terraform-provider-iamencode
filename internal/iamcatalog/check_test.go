@@ -475,6 +475,245 @@ func TestCheckPolicy_ConditionKey_OperandIsNotAMap(t *testing.T) {
 	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+// withResources wires up a catalog where s3 has GetObject (object only),
+// ListBucket (bucket only), and PutBucketPolicy (bucket only), each tied to
+// the appropriate resource type with realistic ARN templates.
+func withResources(t *testing.T) *Catalog {
+	t.Helper()
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"s3": {
+			actions: map[string][]string{
+				"GetObject":       nil,
+				"ListBucket":      nil,
+				"PutBucketPolicy": nil,
+			},
+			actionResources: map[string][]string{
+				"GetObject":       {"object"},
+				"ListBucket":      {"bucket"},
+				"PutBucketPolicy": {"bucket"},
+			},
+			resources: map[string][]string{
+				"object": {"arn:${Partition}:s3:::${BucketName}/${ObjectName}"},
+				"bucket": {"arn:${Partition}:s3:::${BucketName}"},
+			},
+		},
+	})
+	return New(fs.server.URL)
+}
+
+func TestCheckPolicy_Resource_Valid(t *testing.T) {
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:GetObject",
+				"Resource": "arn:aws:s3:::my-bucket/key/path",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_BucketArnOnObjectAction_Rejected(t *testing.T) {
+	// Classic mistake: writing a bucket-level ARN for an action that only
+	// operates on objects. The catalog's ARN templates make this trivial
+	// to catch (object template requires "/" + ObjectName).
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:GetObject",
+				"Resource": "arn:aws:s3:::my-bucket",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resource "arn:aws:s3:::my-bucket"`)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
+}
+
+func TestCheckPolicy_Resource_BareStar(t *testing.T) {
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:GetObject",
+				"Resource": "*",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_BareStar_InsideList(t *testing.T) {
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:GetObject",
+				"Resource": []any{"arn:aws:s3:::ok/key", "*"},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_WildcardWithinARN(t *testing.T) {
+	// "arn:aws:s3:::*" is a valid IAM wildcard for "any bucket" — the
+	// catalog's bucket template matches it as a bucket-level ARN. For
+	// GetObject (object-only) it shouldn't match, since the object template
+	// requires "/${ObjectName}".
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:ListBucket",
+				"Resource": "arn:aws:s3:::*",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+
+	policy["Statement"].([]any)[0].(map[string]any)["Action"] = "s3:GetObject"
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "arn:aws:s3:::*")
+}
+
+func TestCheckPolicy_Resource_MultipleActions_UnionsPatterns(t *testing.T) {
+	// One ARN is a bucket, the other an object; with both ListBucket and
+	// GetObject in the statement the union of their resource types covers
+	// both.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:ListBucket", "s3:GetObject"},
+				"Resource": []any{"arn:aws:s3:::my-bucket", "arn:aws:s3:::my-bucket/key"},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_WildcardActionFallsBackToServiceArns(t *testing.T) {
+	// "s3:*" covers every s3 action; we can't narrow which resource types,
+	// so use the service-wide union — every declared template.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:*",
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_BareStarAction_SkipsCheck(t *testing.T) {
+	// Action="*" spans every service, so we can't pin a service catalog.
+	// The resource check skips, even when the ARN is nonsense.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "*",
+				"Resource": "arn:nonsense:bad",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_NotResource_Skipped(t *testing.T) {
+	// NotResource means "everything except these," which is the wrong
+	// domain for matching against action ARN templates.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":      "s3:GetObject",
+				"NotResource": "arn:aws:s3:::my-bucket",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_NetworkFailure_Surfaces(t *testing.T) {
+	// Wildcard action skips checkOne's Lookup so the first network attempt
+	// happens inside checkResources. The ErrUnavailable must bubble out.
+	c := New("http://127.0.0.1:1")
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:Get*",
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnavailable)
+}
+
+func TestCheckPolicy_Resource_WildcardServicePrefix_SkipsCheck(t *testing.T) {
+	// "*:GetObject" can't be pinned to a single service catalog, so the
+	// resource check bails — even if the ARN is obviously wrong.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "*:GetObject",
+				"Resource": "arn:nonsense:bad",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_UnknownService_ContinuesEvaluation(t *testing.T) {
+	// One action's service is a typo (continue past it), the other resolves;
+	// the Resource must match the resolved service's patterns. checkOne
+	// flags the typo separately.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"unknownsvc:Foo", "s3:GetObject"},
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err) // checkOne flags unknownsvc
+	assert.Contains(t, err.Error(), "unknown AWS service prefix")
+	assert.NotContains(t, err.Error(), "does not match", "valid s3 object ARN must still pass")
+}
+
+func TestCheckPolicy_Resource_NotActionStatement_Skipped(t *testing.T) {
+	// NotAction means "every action except these," so we don't know which
+	// resource templates to consult. checkResources skips.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"NotAction": "s3:GetObject",
+				"Resource":  "arn:something:weird",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCompileARNTemplate_MalformedReturnsNil(t *testing.T) {
+	// An unterminated ${ should not panic or compile garbage; the parser
+	// returns nil and the caller drops the template.
+	assert.Nil(t, compileARNTemplate("arn:${broken"))
+}
+
 func TestSplitAction(t *testing.T) {
 	cases := []struct {
 		in           string
