@@ -101,6 +101,11 @@ func (c *Catalog) Lookup(_ context.Context, prefix string) (*Service, error) {
 		e := v.(serviceEntry)
 		return e.svc, e.err
 	}
+	// The closure intentionally always returns (entry, nil); real failures are
+	// wrapped into serviceEntry.err and surfaced after sf.Do unwraps, so we
+	// discard sf.Do's error half. Keep returning nil here — if a future change
+	// surfaces a real error from the closure, also update the call site to
+	// propagate it instead of relying on this contract.
 	v, _, _ := c.sf.Do(key, func() (any, error) {
 		// Re-check inside the singleflight in case another caller already finished.
 		if v, ok := c.services.Load(key); ok {
