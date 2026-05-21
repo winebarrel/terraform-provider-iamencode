@@ -8,11 +8,11 @@ vet:
 
 .PHONY: test
 test:
-	go test -v -count=1 ./...
+	go test -v -count=1 -race ./...
 
 .PHONY: coverage
 coverage:
-	go test -count=1 -covermode=atomic -coverprofile=coverage.txt -coverpkg=./internal/... ./...
+	go test -count=1 -race -covermode=atomic -coverprofile=coverage.txt -coverpkg=./internal/... ./...
 
 .PHONY: lint
 lint:
