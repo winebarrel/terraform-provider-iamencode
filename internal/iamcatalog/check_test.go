@@ -1190,6 +1190,28 @@ func TestCheckPolicy_Resource_IamWildcardSpansColon(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_Resource_ColonExtendedSibling_RejectsConcreteChildShape(t *testing.T) {
+	// The colon-extended fix relaxes the short template's last placeholder
+	// to span '/' (so log-group names with slashes pass) and to accept IAM
+	// wildcard tails like ":*". It must NOT also accept *concrete* ARNs
+	// whose suffix looks like the long template's structure — e.g. a real
+	// log-stream ARN paired with a log-group-only action like
+	// CreateLogGroup. Without this guard the validator would silently lose
+	// its action/resource-type mismatch check for colon-extended families.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:WriteGroup",
+				"Resource": "arn:aws:svc:r:a:group:/path/to/foo:sub:bar",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
+}
+
 func TestCheckPolicy_Resource_SlashExtendedSibling_LastPlaceholderStaysBounded(t *testing.T) {
 	// Regression guard: when a sibling extends with "/<X>" (not ':<X>'),
 	// the short template's last placeholder must remain bounded to "[^:/]*"

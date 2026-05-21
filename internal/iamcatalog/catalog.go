@@ -427,14 +427,16 @@ func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 //     template adds "/${ObjectName}", so an ARN with '/' is really an
 //     object ARN and shouldn't satisfy the bucket-only resource.
 //
-//  4. Last placeholder otherwise → ".*". CloudWatch Logs log-group ARNs
-//     land here: log group names contain '/' ("/aws/codebuild/foo"),
-//     and the log-stream sibling extends with ':' not '/', so rule 3
-//     doesn't trigger. Greedy (rather than "[^:]*") is deliberate — IAM
-//     '*' in user ARNs spans ':' too (the canonical CodeBuild policy
-//     uses "log-group:/aws/codebuild/proj:*" to mean log-group + any
-//     log-stream), and the literal anchors before this placeholder
-//     ("...:log-group:") still keep the shape check meaningful.
+//  4. Last placeholder otherwise → "[^:]*(?::[*?])*". CloudWatch Logs
+//     log-group ARNs land here: log group names contain '/'
+//     ("/aws/codebuild/foo"), and the log-stream sibling extends with
+//     ':' not '/', so rule 3 doesn't trigger. The base class is "[^:]*"
+//     (allow '/', forbid ':') so concrete child-resource ARNs like
+//     "...:group:foo:sub:bar" don't accidentally satisfy a short-only
+//     action's template. The trailing "(?::[*?])*" group additionally
+//     accepts IAM wildcard tails like ":*" or ":?:*" — the canonical
+//     CodeBuild policy ("...:log-group:/aws/codebuild/proj:*") relies
+//     on this to refer to "the group plus any sub-resource."
 //
 //  5. Default (non-last placeholder, not followed by '/') → "[^:]*".
 //     Allows '/' (needed for ${LogGroupName} appearing mid-template in
@@ -459,7 +461,7 @@ func arnCharClass(tmpl string, p [2]int, idx, lastIdx int, siblings []string) st
 			return "[^:/]*"
 		}
 	}
-	return ".*"
+	return "[^:]*(?::[*?])*"
 }
 
 func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {
