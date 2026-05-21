@@ -140,16 +140,22 @@ func appendStringOrList(out []string, v any) []string {
 	return out
 }
 
-// checkConditions validates that every key in Statement.Condition is one the
-// statement's actions actually consume. Returns (issues, err). A non-nil err
-// is ErrUnavailable; CheckPolicy bubbles it up directly. Wildcard actions
+// checkConditions validates that every key in Statement.Condition is one that
+// the statement's actions actually consume. Returns (issues, err). A non-nil
+// err is ErrUnavailable; CheckPolicy bubbles it up directly. Wildcard actions
 // (bare "*" or "*:Foo") yield no issues — pattern expansion is out of scope.
+//
+// Only positive Action entries drive the keyspace. A NotAction statement
+// means "every IAM action except these," so validating its Condition keys
+// against the listed exclusions would be backwards (a key valid for any of
+// the other 10,000 actions would get falsely flagged). For NotAction-only
+// statements we skip the check.
 func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtIdx int) ([]string, error) {
 	cond, _ := stmt["Condition"].(map[string]any)
 	if len(cond) == 0 {
 		return nil, nil
 	}
-	actions := actionsOf(stmt)
+	actions := appendStringOrList(nil, stmt["Action"])
 	if len(actions) == 0 {
 		return nil, nil
 	}

@@ -69,7 +69,8 @@ func newFakeServer(t *testing.T, services map[string][]string) *fakeServer {
 
 // fakeServiceData lets newFakeServerWithKeys describe a richer service shape
 // (per-action condition keys + service-level keys) for condition-key tests.
-// Leave any field empty to omit it.
+// Both arrays are always emitted in the response — empty slices serialize as
+// empty JSON arrays, which the catalog parser handles identically to absent.
 type fakeServiceData struct {
 	actions          map[string][]string // action name → ActionConditionKeys
 	svcConditionKeys []string            // service-level ConditionKeys[]

@@ -300,6 +300,35 @@ func TestCheckPolicy_ConditionKey_BareStarActionSkipsCheck(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_ConditionKey_NotActionStatement_SkipsConditionCheck(t *testing.T) {
+	// NotAction means "every IAM action EXCEPT these," so the listed entries
+	// don't define the keyspace the way Action entries do. Validating
+	// condition keys against the NotAction list would falsely flag keys that
+	// are perfectly valid for actions the statement actually authorizes.
+	// checkOne still validates each NotAction name exists (catches typos).
+	c := withConditionKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"NotAction": "s3:GetObject",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{"iam:PassedToService": "lambda.amazonaws.com"},
+				},
+			},
+		},
+	}
+	// Real NotAction entries that exist must still pass.
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+
+	// And a typo in NotAction is still caught by checkOne even though
+	// checkConditions skipped.
+	policy["Statement"].([]any)[0].(map[string]any)["NotAction"] = "s3:GetObjectx"
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown action "GetObjectx"`)
+	assert.NotContains(t, err.Error(), "condition key", "NotAction must not drive the condition-key keyspace")
+}
+
 func TestCheckPolicy_ConditionKey_MultipleServices_UnionsKeys(t *testing.T) {
 	// Statement mixes s3 and lambda. Each Condition key must be valid for at
 	// least one of the actions (union semantics); a key that belongs to

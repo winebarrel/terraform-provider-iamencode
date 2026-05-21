@@ -31,7 +31,7 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"[AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). " +
 			"Two extra checks run on top of the JSON Schema:\n\n" +
 			"1. Every `Action` / `NotAction` must name a real service and a real action (catches typos like `s3:Frobnicate`).\n" +
-			"2. Every key inside `Condition` must be one the statement's actions actually consume. Keys with the `aws:` " +
+			"2. Every key inside `Condition` must be one that the statement's actions actually consume. Keys with the `aws:` " +
 			"prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is " +
 			"accepted on `s3:ListBucket` but rejected on `s3:GetObject`).\n\n" +
 			"Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the " +
