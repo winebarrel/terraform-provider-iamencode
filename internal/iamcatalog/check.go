@@ -97,8 +97,12 @@ func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) (st
 	if !ok {
 		return fmt.Sprintf("Statement[%d]: malformed action %q (expected \"service:action\" or \"*\")", stmtIndex, action), nil
 	}
-	if strings.ContainsRune(prefix, '*') || strings.ContainsRune(name, '*') {
-		return "", nil // wildcards: out of scope for the catalog check
+	if strings.ContainsRune(prefix, '*') {
+		// Wildcard in the service prefix would require fetching every
+		// service in the catalog (449+ at time of writing) to know if any
+		// real action matches — pattern expansion of that scope is out of
+		// scope. Skip silently.
+		return "", nil
 	}
 	svc, err := c.Lookup(ctx, prefix)
 	switch {
@@ -108,6 +112,15 @@ func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) (st
 		return fmt.Sprintf("Statement[%d]: unknown AWS service prefix %q in action %q", stmtIndex, prefix, action), nil
 	case err != nil:
 		return "", err
+	}
+	if strings.ContainsRune(name, '*') || strings.ContainsRune(name, '?') {
+		// Wildcard within the action name. Expand against the service's
+		// real action list — catches patterns like "s3:Frobni*" that look
+		// plausible but match nothing.
+		if !svc.matchesAny(name) {
+			return fmt.Sprintf("Statement[%d]: action pattern %q matches no actions in service %q", stmtIndex, action, prefix), nil
+		}
+		return "", nil
 	}
 	if !svc.HasAction(name) {
 		return fmt.Sprintf("Statement[%d]: unknown action %q for service %q", stmtIndex, name, prefix), nil

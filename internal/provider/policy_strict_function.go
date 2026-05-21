@@ -31,8 +31,11 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"[AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). " +
 			"Four extra checks run on top of the JSON Schema:\n\n" +
 			"1. Non-wildcard `Action` / `NotAction` values (e.g. `s3:GetObject`) must name a real service and a real " +
-			"action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns (`*`, `s3:*`, `s3:Get*`, " +
-			"`*:GetObject`) aren't expanded and are accepted without catalog lookup.\n" +
+			"action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns within the action name " +
+			"(e.g. `s3:Get*`, `s3:G?tObject`) are expanded against the service's real action list and must match " +
+			"at least one action, so something like `s3:Frobni*` is also flagged. The bare `*` and wildcard service " +
+			"prefixes (`*:GetObject`) are accepted without catalog lookup because they would require fetching every " +
+			"AWS service catalog to expand.\n" +
 			"2. Every key inside `Condition` must be one that the statement's actions actually consume. Keys with the `aws:` " +
 			"prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is " +
 			"accepted on `s3:ListBucket` but rejected on `s3:GetObject`). When an action's name is itself a wildcard " +

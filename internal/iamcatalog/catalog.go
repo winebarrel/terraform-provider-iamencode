@@ -94,6 +94,51 @@ func (s *Service) HasAction(name string) bool {
 	return ok
 }
 
+// matchesAny reports whether at least one real action in the service matches
+// the IAM glob pattern (which supports "*" for zero-or-more chars and "?" for
+// exactly one). Returns false if the pattern is malformed enough that we
+// can't compile it; the caller treats that the same as "no match".
+func (s *Service) matchesAny(pattern string) bool {
+	if s == nil {
+		return false
+	}
+	re := compileActionPattern(pattern)
+	if re == nil {
+		return false
+	}
+	for action := range s.actions {
+		if re.MatchString(action) {
+			return true
+		}
+	}
+	return false
+}
+
+// compileActionPattern turns an IAM glob ("Get*", "GetObject?", "List*Bucket*")
+// into an anchored regex against lowercased action names. AWS IAM patterns
+// support only "*" (any run, including empty) and "?" (exactly one char);
+// every other rune is taken literally.
+func compileActionPattern(p string) *regexp.Regexp {
+	var b strings.Builder
+	b.WriteByte('^')
+	for _, c := range strings.ToLower(p) {
+		switch c {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteString(".")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	b.WriteByte('$')
+	re, err := regexp.Compile(b.String())
+	if err != nil {
+		return nil
+	}
+	return re
+}
+
 // Catalog is safe for concurrent use. Construct with New.
 type Catalog struct {
 	endpoint string

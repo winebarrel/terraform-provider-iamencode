@@ -69,6 +69,82 @@ func TestCheckPolicy_WildcardsSkipped(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_WildcardName_MatchesRealAction(t *testing.T) {
+	// "s3:Get*" should expand against the service catalog. Since the fake
+	// catalog has a real GetObject action, the pattern resolves and passes.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject", "PutObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:Get*"},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_WildcardName_NoMatch_Flagged(t *testing.T) {
+	// "s3:Frobni*" looks plausible (right service, "*" suffix is common) but
+	// matches no real s3 action. That's the typo we want to catch.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject", "PutObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:Frobni*"},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `action pattern "s3:Frobni*" matches no actions in service "s3"`)
+}
+
+func TestCheckPolicy_WildcardName_SingleCharMatcher(t *testing.T) {
+	// "?" matches exactly one character — "G?tObject" should hit GetObject.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:G?tObject"},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_WildcardName_BareStar(t *testing.T) {
+	// "s3:*" matches everything in s3, so it always passes whenever any
+	// action exists in the service.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:*"},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_WildcardName_EmptyService_Flagged(t *testing.T) {
+	// Edge case: a service that has zero actions — any non-trivial wildcard
+	// pattern matches nothing. (A real AWS service won't have zero actions,
+	// but the helper handles it gracefully rather than panicking.)
+	c := newFakeCatalog(t, map[string][]string{"s3": {}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:Get*"},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "matches no actions")
+}
+
+func TestCheckPolicy_WildcardServicePrefix_StillSkipped(t *testing.T) {
+	// A wildcard in the *service* prefix can't be expanded without fetching
+	// every service catalog (hundreds of services). Keep skipping silently.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "*:GetObject"},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
 func TestCheckPolicy_NotActionChecked(t *testing.T) {
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	policy := map[string]any{
