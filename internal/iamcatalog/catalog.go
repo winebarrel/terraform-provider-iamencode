@@ -270,13 +270,25 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 	// below can merge them in (those keys are valid wherever an action
 	// targets the resource, and many keys appear ONLY here — never as
 	// service-level or per-action keys).
+	//
+	// `siblings` collects every ARN format across the service so each
+	// template can know whether a longer template extends it with "/<X>".
+	// That's the signal compileARNTemplate uses to keep S3's bucket
+	// placeholder bounded ("...:::${BucketName}" stays bucket-only because
+	// the object template adds "/${ObjectName}") while still letting
+	// CloudWatch Logs log-group's placeholder span "/" (the log-stream
+	// template extends with ":log-stream:", a ":" not a "/").
 	patternsByType := make(map[string][]*regexp.Regexp, len(raw.Resources))
 	keysByResource := make(map[string][]string, len(raw.Resources))
 	allArns := make([]*regexp.Regexp, 0)
+	var siblings []string
+	for _, r := range raw.Resources {
+		siblings = append(siblings, r.ARNFormats...)
+	}
 	for _, r := range raw.Resources {
 		patterns := make([]*regexp.Regexp, 0, len(r.ARNFormats))
 		for _, tmpl := range r.ARNFormats {
-			if re := compileARNTemplate(tmpl); re != nil {
+			if re := compileARNTemplate(tmpl, siblings); re != nil {
 				patterns = append(patterns, re)
 				allArns = append(allArns, re)
 			}
@@ -354,28 +366,13 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 //
 //	arn:${Partition}:s3:::${BucketName}/${ObjectName}
 //
-// into an anchored regex. Placeholder expansion follows two rules:
-//
-//   - Most placeholders compile to [^:/]* — they should not span ARN
-//     separators. This is what lets the bucket template
-//     "arn:${Partition}:s3:::${BucketName}" reject an object ARN like
-//     "arn:aws:s3:::bucket/key": the bucket placeholder doesn't allow
-//     the slash.
-//
-//   - The final placeholder in a template that contains at least one
-//     literal "/" compiles to ".*" — that's where S3 object keys or
-//     IAM role paths live (e.g. "${ObjectName}" in "...:::${B}/${O}",
-//     or "${RoleNameWithPath}" in "...:role/${RoleNameWithPath}"), and
-//     they can legitimately contain slashes.
-//
-// Known limitation: resource names that themselves contain "/" but whose
-// templates lack a "/" literal — CloudWatch Logs log groups are the
-// canonical example ("arn:aws:logs:r:a:log-group:/aws/lambda/foo") —
-// will not match. Users hitting that case can write Resource: "*" or
-// drop in a wildcard.
+// into an anchored regex. `siblings` is the full list of ARN formats
+// declared by the same service so the compiler can decide whether a
+// template's last placeholder should be bounded or greedy — see the
+// rules in arnPlaceholderPattern for the per-placeholder logic.
 //
 // A nil return means the template was malformed and should be ignored.
-func compileARNTemplate(tmpl string) *regexp.Regexp {
+func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 	var placeholders [][2]int
 	for i := 0; i < len(tmpl); {
 		if i+1 < len(tmpl) && tmpl[i] == '$' && tmpl[i+1] == '{' {
@@ -399,11 +396,7 @@ func compileARNTemplate(tmpl string) *regexp.Regexp {
 	cursor := 0
 	for idx, p := range placeholders {
 		b.WriteString(regexp.QuoteMeta(tmpl[cursor:p[0]]))
-		if idx == lastIdx && strings.ContainsRune(tmpl[:p[0]], '/') {
-			b.WriteString(".*")
-		} else {
-			b.WriteString("[^:/]*")
-		}
+		b.WriteString(arnPlaceholderPattern(tmpl, p, idx, lastIdx, siblings))
 		cursor = p[1]
 	}
 	b.WriteString(regexp.QuoteMeta(tmpl[cursor:]))
@@ -413,6 +406,68 @@ func compileARNTemplate(tmpl string) *regexp.Regexp {
 		return nil
 	}
 	return re
+}
+
+// arnPlaceholderPattern returns the regex fragment that should occupy a
+// single placeholder position in the compiled template. Most rules return
+// a bare character class ("[^:]*", "[^:/]*", ".*"), but rule 4 returns a
+// composite fragment ("[^:]*(?::[*?])*") that pairs a bounded segment with
+// an optional IAM-wildcard tail; treat the return value as an arbitrary
+// regex fragment rather than a pure character class.
+//
+// The rules, applied in order:
+//
+//  1. Non-last placeholder followed by '/' in the same template → "[^:/]*".
+//     The literal '/' is a delimiter for the next segment, so the
+//     placeholder must stop there. Example: ${BucketName} in
+//     ":::${BucketName}/${ObjectName}".
+//
+//  2. Last placeholder with '/' anywhere in the preceding template text
+//     → ".*". The template is path-shaped and the trailing value can
+//     legitimately contain '/'. Example: ${ObjectName} in ":::${B}/${O}",
+//     ${RoleNameWithPath} in ":role/${RoleNameWithPath}".
+//
+//  3. Last placeholder where a sibling template extends this one's
+//     prefix with "/<...>" → "[^:/]*". This is the bucket-vs-object
+//     pair: S3 bucket's ${BucketName} stays bounded because the object
+//     template adds "/${ObjectName}", so an ARN with '/' is really an
+//     object ARN and shouldn't satisfy the bucket-only resource.
+//
+//  4. Last placeholder otherwise → "[^:]*(?::[*?])*". CloudWatch Logs
+//     log-group ARNs land here: log group names contain '/'
+//     ("/aws/codebuild/foo"), and the log-stream sibling extends with
+//     ':' not '/', so rule 3 doesn't trigger. The base class is "[^:]*"
+//     (allow '/', forbid ':') so concrete child-resource ARNs like
+//     "...:group:foo:sub:bar" don't accidentally satisfy a short-only
+//     action's template. The trailing "(?::[*?])*" group additionally
+//     accepts IAM wildcard tails like ":*" or ":?:*" — the canonical
+//     CodeBuild policy ("...:log-group:/aws/codebuild/proj:*") relies
+//     on this to refer to "the group plus any sub-resource."
+//
+//  5. Default (non-last placeholder, not followed by '/') → "[^:]*".
+//     Allows '/' (needed for ${LogGroupName} appearing mid-template in
+//     "...:log-group:${LogGroupName}:log-stream:..." where the real
+//     value is "/aws/codebuild/foo") while still respecting the ':'
+//     ARN separator.
+func arnPlaceholderPattern(tmpl string, p [2]int, idx, lastIdx int, siblings []string) string {
+	if idx < lastIdx {
+		if p[1] < len(tmpl) && tmpl[p[1]] == '/' {
+			return "[^:/]*"
+		}
+		return "[^:]*"
+	}
+	if strings.ContainsRune(tmpl[:p[0]], '/') {
+		return ".*"
+	}
+	for _, s := range siblings {
+		if s == tmpl {
+			continue
+		}
+		if len(s) > p[1] && s[:p[1]] == tmpl[:p[1]] && s[p[1]] == '/' {
+			return "[^:/]*"
+		}
+	}
+	return "[^:]*(?::[*?])*"
 }
 
 func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {

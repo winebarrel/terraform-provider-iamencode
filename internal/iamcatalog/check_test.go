@@ -1106,10 +1106,145 @@ func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 	assert.NotContains(t, err.Error(), "does not match", "valid s3 ARN should not be flagged when only the action name is wrong")
 }
 
+// withColonExtendedTemplates wires up a service whose long template extends
+// the short one with ':' rather than '/'. This mirrors the CloudWatch Logs
+// pair (log-group → log-stream) where log-group names contain '/' and the
+// log-stream template adds ":log-stream:..." rather than "/...". The
+// resource validator's heuristic must let the last placeholder of the short
+// template span '/'.
+func withColonExtendedTemplates(t *testing.T) *Catalog {
+	t.Helper()
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions: map[string][]string{
+				"WriteGroup": nil,
+				"WriteSub":   nil,
+			},
+			actionResources: map[string][]string{
+				"WriteGroup": {"group"},
+				"WriteSub":   {"sub"},
+			},
+			resources: map[string][]string{
+				"group": {"arn:${Partition}:svc:${Region}:${Account}:group:${GroupName}"},
+				"sub":   {"arn:${Partition}:svc:${Region}:${Account}:group:${GroupName}:sub:${SubName}"},
+			},
+		},
+	})
+	return New(fs.server.URL)
+}
+
+func TestCheckPolicy_Resource_ColonExtendedSibling_LastPlaceholderAllowsSlash(t *testing.T) {
+	// The short template's last placeholder must span '/' because the long
+	// sibling extends with ':' (not '/'). Real-world shape: a CloudWatch
+	// Logs log-group ARN whose name is "/aws/codebuild/foo" — the old
+	// "[^:/]*" rule rejected it as not matching any ARN format.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:WriteGroup",
+				"Resource": "arn:aws:svc:r:a:group:/path/to/foo",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_IntermediatePlaceholder_AllowsSlash(t *testing.T) {
+	// Non-last placeholder followed by ':' (not '/') gets "[^:]*", so values
+	// containing '/' must match. Real-world shape: the log-stream ARN
+	// "...:group:<GroupName>:sub:<SubName>" where <GroupName> is a slash-
+	// containing log-group name like "/aws/codebuild/foo".
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:WriteSub",
+				"Resource": "arn:aws:svc:r:a:group:/path/to/foo:sub:bar",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_IamWildcardSpansColon(t *testing.T) {
+	// IAM treats '*' as "any chars including ':' and '/'". The canonical
+	// CodeBuild-style policy uses
+	//   "...:group:/path/to/foo:*"
+	// to mean "the group plus all sub-resources." The short (group)
+	// template's last placeholder must be greedy enough for this to
+	// match — otherwise valid IAM policies are falsely rejected. Union
+	// semantics let it match against the group template even though the
+	// statement also lists actions that target the sub resource type.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": []any{"svc:WriteGroup", "svc:WriteSub"},
+				"Resource": []any{
+					"arn:aws:svc:r:a:group:/path/to/foo:*",
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_ColonExtendedSibling_RejectsConcreteChildShape(t *testing.T) {
+	// The colon-extended fix relaxes the short template's last placeholder
+	// to span '/' (so log-group names with slashes pass) and to accept IAM
+	// wildcard tails like ":*". It must NOT also accept *concrete* ARNs
+	// whose suffix looks like the long template's structure — e.g. a real
+	// log-stream ARN paired with a log-group-only action like
+	// CreateLogGroup. Without this guard the validator would silently lose
+	// its action/resource-type mismatch check for colon-extended families.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:WriteGroup",
+				"Resource": "arn:aws:svc:r:a:group:/path/to/foo:sub:bar",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
+}
+
+func TestCheckPolicy_Resource_SlashExtendedSibling_LastPlaceholderStaysBounded(t *testing.T) {
+	// Regression guard: when a sibling extends with "/<X>" (not ':<X>'),
+	// the short template's last placeholder must remain bounded to "[^:/]*"
+	// so an ARN containing '/' is correctly diagnosed as belonging to the
+	// long template, not the short one. Mirrors S3 bucket-vs-object.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions:         map[string][]string{"WriteShort": nil},
+			actionResources: map[string][]string{"WriteShort": {"short"}},
+			resources: map[string][]string{
+				"short": {"arn:${Partition}:svc:::${Name}"},
+				"long":  {"arn:${Partition}:svc:::${Name}/${SubName}"},
+			},
+		},
+	})
+	c := New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:WriteShort",
+				"Resource": "arn:aws:svc:::main/sub",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
+}
+
 func TestCompileARNTemplate_MalformedReturnsNil(t *testing.T) {
 	// An unterminated ${ should not panic or compile garbage; the parser
 	// returns nil and the caller drops the template.
-	assert.Nil(t, compileARNTemplate("arn:${broken"))
+	assert.Nil(t, compileARNTemplate("arn:${broken", nil))
 }
 
 func TestSplitAction(t *testing.T) {
