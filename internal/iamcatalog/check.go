@@ -388,13 +388,24 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			patterns = append(patterns, svc.allArns...)
 			continue
 		}
-		if perAction, has := svc.arnsByAction[strings.ToLower(name)]; has {
+		if perAction, has := svc.arnsByAction[strings.ToLower(name)]; has && len(perAction) > 0 {
 			patterns = append(patterns, perAction...)
 		} else {
-			// Unknown action (typo). checkOne reports the action separately;
-			// fall back to the service-wide union here so a typo'd action
-			// doesn't also trigger a misleading "resource doesn't match"
-			// error against an empty pattern set.
+			// Two cases share this fallback to the service-wide ARN union:
+			//
+			//   1. The action is unknown (typo). checkOne reports the
+			//      action separately; we use allArns so the unknown
+			//      action doesn't also drag a misleading "resource
+			//      doesn't match" error along with it.
+			//
+			//   2. The action is known but the service reference lists
+			//      it with no Resources (e.g. iam:ListUsers,
+			//      iam:ListVirtualMFADevices). IAM evaluates these
+			//      service-level actions against the account scope, and
+			//      the AWS-documented "let users self-manage" pattern
+			//      pairs them with a concrete IAM-shaped Resource
+			//      ("arn:aws:iam::ACCOUNT:user/"). Validate against
+			//      allArns rather than the empty per-action set.
 			patterns = append(patterns, svc.allArns...)
 		}
 	}

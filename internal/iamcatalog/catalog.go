@@ -66,8 +66,24 @@ type Service struct {
 	keysByAction map[string]map[string]struct{} // both lowercased
 
 	// arnsByAction maps lowercased action name → ARN-format regexes accepted
-	// for that action. An entry is always present for every known action
-	// (possibly empty, meaning "this action doesn't operate on a resource").
+	// for that action. An entry is always present for every known action;
+	// the slice may be empty.
+	//
+	// An empty slice in the service-reference data ("Resources": null or
+	// missing) is genuinely ambiguous — AWS uses the same null/missing
+	// shape for two distinct semantics:
+	//
+	//   - service-level actions (iam:ListUsers, iam:ListVirtualMFADevices,
+	//     …) that AWS's own documentation pairs with concrete service-
+	//     shaped ARNs;
+	//   - truly resourceless actions (sts:GetCallerIdentity,
+	//     sts:GetSessionToken, …) where only Resource = "*" is meaningful.
+	//
+	// The service-reference feed gives no signal to tell these apart, so
+	// checkResources falls back to allArns for both. The trade-off is a
+	// known false negative on the truly-resourceless case (a concrete ARN
+	// would slip past) in exchange for not rejecting AWS-documented
+	// service-level policies.
 	arnsByAction map[string][]*regexp.Regexp
 
 	// allArns is the union of every ARN format the service declares — used
