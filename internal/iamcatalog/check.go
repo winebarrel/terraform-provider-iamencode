@@ -288,7 +288,15 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			patterns = append(patterns, svc.allArns...)
 			continue
 		}
-		patterns = append(patterns, svc.arnsByAction[strings.ToLower(name)]...)
+		if perAction, has := svc.arnsByAction[strings.ToLower(name)]; has {
+			patterns = append(patterns, perAction...)
+		} else {
+			// Unknown action (typo). checkOne reports the action separately;
+			// fall back to the service-wide union here so a typo'd action
+			// doesn't also trigger a misleading "resource doesn't match"
+			// error against an empty pattern set.
+			patterns = append(patterns, svc.allArns...)
+		}
 	}
 
 	var issues []string

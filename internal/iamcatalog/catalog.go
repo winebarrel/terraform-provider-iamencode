@@ -254,27 +254,59 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 //
 //	arn:${Partition}:s3:::${BucketName}/${ObjectName}
 //
-// into an anchored regex. Placeholders become [^:]* — IAM ARN segments are
-// colon-separated and the placeholders never span them in AWS's templates,
-// so this matches every legitimate ARN we've seen without resorting to
-// full URI-style parsing. A nil return means the template was malformed
-// and should be ignored.
+// into an anchored regex. Placeholder expansion follows two rules:
+//
+//   - Most placeholders compile to [^:/]* — they should not span ARN
+//     separators. This is what lets the bucket template
+//     "arn:${Partition}:s3:::${BucketName}" reject an object ARN like
+//     "arn:aws:s3:::bucket/key": the bucket placeholder doesn't allow
+//     the slash.
+//
+//   - The final placeholder in a template that contains at least one
+//     literal "/" compiles to ".*" — that's where S3 object keys or
+//     IAM role paths live (e.g. "${ObjectName}" in "...:::${B}/${O}",
+//     or "${RoleNameWithPath}" in "...:role/${RoleNameWithPath}"), and
+//     they can legitimately contain slashes.
+//
+// Known limitation: resource names that themselves contain "/" but whose
+// templates lack a "/" literal — CloudWatch Logs log groups are the
+// canonical example ("arn:aws:logs:r:a:log-group:/aws/lambda/foo") —
+// will not match. Users hitting that case can write Resource: "*" or
+// drop in a wildcard.
+//
+// A nil return means the template was malformed and should be ignored.
 func compileARNTemplate(tmpl string) *regexp.Regexp {
-	var b strings.Builder
-	b.WriteByte('^')
+	var placeholders [][2]int
 	for i := 0; i < len(tmpl); {
 		if i+1 < len(tmpl) && tmpl[i] == '$' && tmpl[i+1] == '{' {
 			end := strings.IndexByte(tmpl[i:], '}')
 			if end < 0 {
 				return nil
 			}
-			b.WriteString("[^:]*")
+			placeholders = append(placeholders, [2]int{i, i + end + 1})
 			i += end + 1
 			continue
 		}
-		b.WriteString(regexp.QuoteMeta(string(tmpl[i])))
 		i++
 	}
+	lastIdx := -1
+	if len(placeholders) > 0 {
+		lastIdx = len(placeholders) - 1
+	}
+
+	var b strings.Builder
+	b.WriteByte('^')
+	cursor := 0
+	for idx, p := range placeholders {
+		b.WriteString(regexp.QuoteMeta(tmpl[cursor:p[0]]))
+		if idx == lastIdx && strings.ContainsRune(tmpl[:p[0]], '/') {
+			b.WriteString(".*")
+		} else {
+			b.WriteString("[^:/]*")
+		}
+		cursor = p[1]
+	}
+	b.WriteString(regexp.QuoteMeta(tmpl[cursor:]))
 	b.WriteByte('$')
 	re, err := regexp.Compile(b.String())
 	if err != nil {

@@ -708,6 +708,60 @@ func TestCheckPolicy_Resource_NotActionStatement_Skipped(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_Resource_ObjectArnOnBucketAction_Rejected(t *testing.T) {
+	// The reverse of the bucket-on-object mistake: an object ARN given to
+	// a bucket-only action. The bucket template ("...:::${BucketName}")
+	// now declines to match because ${BucketName} no longer spans the "/"
+	// separator. This is the case the regex tightening was added for.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:ListBucket",
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resource "arn:aws:s3:::my-bucket/key"`)
+}
+
+func TestCheckPolicy_Resource_ObjectKey_WithSlashes_Accepted(t *testing.T) {
+	// S3 object keys legitimately contain "/". The last placeholder in a
+	// template that has a "/" literal compiles greedily, so deeply nested
+	// keys must still match.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:GetObject",
+				"Resource": "arn:aws:s3:::my-bucket/logs/2026/05/21/file.log",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
+	// Typo'd action: checkOne reports it; checkResources falls back to the
+	// service-wide ARN union so a valid s3 ARN doesn't ALSO get flagged as
+	// "doesn't match" against an empty per-action pattern set.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:NotARealAction",
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown action "NotARealAction"`)
+	assert.NotContains(t, err.Error(), "does not match", "valid s3 ARN should not be flagged when only the action name is wrong")
+}
+
 func TestCompileARNTemplate_MalformedReturnsNil(t *testing.T) {
 	// An unterminated ${ should not panic or compile garbage; the parser
 	// returns nil and the caller drops the template.
