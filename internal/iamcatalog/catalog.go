@@ -172,7 +172,7 @@ func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return fmt.Errorf("http %d", resp.StatusCode)

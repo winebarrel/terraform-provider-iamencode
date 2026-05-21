@@ -226,7 +226,7 @@ func TestCatalog_Lookup_InvalidURLInIndex(t *testing.T) {
 	t.Cleanup(srv.Close)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		// Control character in URL → http.NewRequestWithContext rejects it.
-		fmt.Fprint(w, `[{"service":"s3","url":"http://example.test/"}]`)
+		fmt.Fprintf(w, `[{"service":"s3","url":"http://example%c.test/"}]`, 0x01)
 	})
 	c := New(srv.URL)
 	_, err := c.Lookup(context.Background(), "s3")
