@@ -433,12 +433,15 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 // RFC-1123 LDH domain name (two or more labels of [A-Za-z0-9] with
 // optional internal hyphens, separated by '.').
 //
-// IAM condition keys have exactly one colon (same constraint splitAction
-// enforces for actions), so a multi-colon "host:foo:bar" is rejected to
-// avoid masking real typos. The dot requirement (two labels minimum) is
-// what separates an OIDC key from a regular catalog key like
-// "s3:GetObject" or "sts:RoleSessionName"; the latter have no dot in the
-// prefix and continue to flow through the strict catalog check.
+// The helper deliberately recognizes only the single-colon hostname form.
+// Some IAM condition keys legitimately use multiple colons (KMS encryption
+// context keys like "kms:EncryptionContext:aws:s3:arn", for instance), but
+// those are catalog-listed and flow through the normal check. Restricting
+// this carve-out to one colon keeps it from masking typos that happen to
+// contain extra colons. The dot requirement (two labels minimum) is what
+// separates an OIDC key from a regular catalog key like "s3:GetObject" or
+// "sts:RoleSessionName"; the latter have no dot in the prefix and continue
+// to flow through the strict catalog check.
 func isOIDCConditionKey(key string) bool {
 	if strings.Count(key, ":") != 1 {
 		return false

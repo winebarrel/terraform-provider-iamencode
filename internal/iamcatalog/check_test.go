@@ -554,7 +554,9 @@ func TestCheckPolicy_ConditionKey_OperandIsNotAMap(t *testing.T) {
 
 // withStsForOIDC wires up a minimal sts service for the OIDC condition-key
 // tests below. AssumeRoleWithWebIdentity is the trigger action; TagSession
-// is a co-listed sts action that does NOT enable OIDC keys.
+// is a co-listed sts action that does NOT enable OIDC keys. lambda is
+// added so the "wildcard from an unrelated service must not trigger the
+// carve-out" case can exercise a real wildcard expansion.
 func withStsForOIDC(t *testing.T) *Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
@@ -564,6 +566,11 @@ func withStsForOIDC(t *testing.T) *Catalog {
 				"TagSession":                nil,
 			},
 			svcConditionKeys: []string{"sts:RoleSessionName"},
+		},
+		"lambda": {
+			actions: map[string][]string{
+				"InvokeFunction": nil,
+			},
 		},
 	})
 	return New(fs.server.URL)
@@ -724,13 +731,16 @@ func TestCheckPolicy_ConditionKey_OIDCAcceptedForWildcardActions(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_OIDCNotTriggeredByOtherServiceWildcards(t *testing.T) {
-	// Wildcard patterns from unrelated services must not turn on the OIDC
-	// carve-out — "lambda:*" does not cover sts:AssumeRoleWithWebIdentity.
+	// A wildcard from an unrelated service must not turn on the OIDC
+	// carve-out — "lambda:Invoke*" matches a real lambda action and
+	// otherwise validates fine, but it doesn't cover
+	// sts:AssumeRoleWithWebIdentity, so the OIDC hostname:keyname must
+	// still be flagged.
 	c := withStsForOIDC(t)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
-				"Action": "sts:TagSession",
+				"Action": "lambda:Invoke*",
 				"Condition": map[string]any{
 					"StringEquals": map[string]any{
 						"oidc.example.com:sub": "repo:org/proj",
