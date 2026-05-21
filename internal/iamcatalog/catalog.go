@@ -369,7 +369,7 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 // into an anchored regex. `siblings` is the full list of ARN formats
 // declared by the same service so the compiler can decide whether a
 // template's last placeholder should be bounded or greedy — see the
-// rules in arnCharClass for the per-placeholder logic.
+// rules in arnPlaceholderPattern for the per-placeholder logic.
 //
 // A nil return means the template was malformed and should be ignored.
 func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
@@ -396,7 +396,7 @@ func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 	cursor := 0
 	for idx, p := range placeholders {
 		b.WriteString(regexp.QuoteMeta(tmpl[cursor:p[0]]))
-		b.WriteString(arnCharClass(tmpl, p, idx, lastIdx, siblings))
+		b.WriteString(arnPlaceholderPattern(tmpl, p, idx, lastIdx, siblings))
 		cursor = p[1]
 	}
 	b.WriteString(regexp.QuoteMeta(tmpl[cursor:]))
@@ -408,7 +408,13 @@ func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 	return re
 }
 
-// arnCharClass picks the regex character class for a single placeholder.
+// arnPlaceholderPattern returns the regex fragment that should occupy a
+// single placeholder position in the compiled template. Most rules return
+// a bare character class ("[^:]*", "[^:/]*", ".*"), but rule 4 returns a
+// composite fragment ("[^:]*(?::[*?])*") that pairs a bounded segment with
+// an optional IAM-wildcard tail; treat the return value as an arbitrary
+// regex fragment rather than a pure character class.
+//
 // The rules, applied in order:
 //
 //  1. Non-last placeholder followed by '/' in the same template → "[^:/]*".
@@ -443,7 +449,7 @@ func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 //     "...:log-group:${LogGroupName}:log-stream:..." where the real
 //     value is "/aws/codebuild/foo") while still respecting the ':'
 //     ARN separator.
-func arnCharClass(tmpl string, p [2]int, idx, lastIdx int, siblings []string) string {
+func arnPlaceholderPattern(tmpl string, p [2]int, idx, lastIdx int, siblings []string) string {
 	if idx < lastIdx {
 		if p[1] < len(tmpl) && tmpl[p[1]] == '/' {
 			return "[^:/]*"
