@@ -65,6 +65,10 @@ func (r PolicyStrictFunction) Run(ctx context.Context, req function.RunRequest, 
 		return
 	}
 
-	encoded, _ := json.Marshal(native) // map[string]any with string/bool/float64/[]any: cannot fail
+	encoded, err := json.Marshal(native)
+	if err != nil {
+		resp.Error = function.ConcatFuncErrors(resp.Error, function.NewArgumentFuncError(0, fmt.Sprintf("encode IAM policy: %v", err)))
+		return
+	}
 	resp.Error = function.ConcatFuncErrors(resp.Error, resp.Result.Set(ctx, string(encoded)))
 }
