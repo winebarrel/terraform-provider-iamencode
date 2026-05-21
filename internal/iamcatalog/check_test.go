@@ -55,18 +55,99 @@ func TestCheckPolicy_UnknownAction(t *testing.T) {
 	assert.Contains(t, err.Error(), `unknown action "GetObjectXX" for service "s3"`)
 }
 
-func TestCheckPolicy_WildcardsSkipped(t *testing.T) {
-	// Wildcards must not trip the catalog check — without expansion logic we
-	// can't know which actions they expand to, so we treat them as valid.
+func TestCheckPolicy_BareStarAction_Skipped(t *testing.T) {
+	// The bare "*" is a universal wildcard — every IAM action across every
+	// service. We can't usefully validate it against any one service
+	// catalog, so it passes without lookup. Wildcard *names* (like "s3:*"
+	// or "s3:Get*") are now expanded — see TestCheckPolicy_WildcardName_*.
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	policy := map[string]any{
 		"Statement": []any{
-			map[string]any{"Action": "s3:*"},
-			map[string]any{"Action": "s3:Get*"},
 			map[string]any{"Action": "*"},
 		},
 	}
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_WildcardName_MatchesRealAction(t *testing.T) {
+	// "s3:Get*" should expand against the service catalog. Since the fake
+	// catalog has a real GetObject action, the pattern resolves and passes.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject", "PutObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:Get*"},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_WildcardName_NoMatch_Flagged(t *testing.T) {
+	// "s3:Frobni*" looks plausible (right service, "*" suffix is common) but
+	// matches no real s3 action. That's the typo we want to catch.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject", "PutObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:Frobni*"},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `action pattern "s3:Frobni*" matches no actions in service "s3"`)
+}
+
+func TestCheckPolicy_WildcardName_SingleCharMatcher(t *testing.T) {
+	// "?" matches exactly one character — "G?tObject" should hit GetObject.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:G?tObject"},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_WildcardName_BareStar(t *testing.T) {
+	// "s3:*" matches everything in s3, so it always passes whenever any
+	// action exists in the service.
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:*"},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_WildcardName_EmptyService_Flagged(t *testing.T) {
+	// Edge case: a service that has zero actions — any non-trivial wildcard
+	// pattern matches nothing. (A real AWS service won't have zero actions,
+	// but the helper handles it gracefully rather than panicking.)
+	c := newFakeCatalog(t, map[string][]string{"s3": {}})
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{"Action": "s3:Get*"},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "matches no actions")
+}
+
+func TestCheckPolicy_WildcardServicePrefix_StillSkipped(t *testing.T) {
+	// A wildcard in the *service* prefix can't be expanded without fetching
+	// every service catalog (hundreds of services). Keep skipping silently
+	// — and not just for "*", but also for "?" (the other IAM wildcard).
+	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
+	for _, a := range []string{"*:GetObject", "s*:GetObject", "s?:GetObject", "?3:GetObject"} {
+		t.Run(a, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{"Action": a},
+				},
+			}
+			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+		})
+	}
 }
 
 func TestCheckPolicy_NotActionChecked(t *testing.T) {
@@ -153,14 +234,6 @@ func TestCheckPolicy_MalformedAction(t *testing.T) {
 			assert.Contains(t, err.Error(), "malformed action")
 		})
 	}
-}
-
-func TestCheckPolicy_BareStarAccepted(t *testing.T) {
-	// "*" alone is a legitimate IAM wildcard (all actions). It does not match
-	// the splitAction shape, so it must be handled explicitly before that check.
-	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
-	policy := map[string]any{"Statement": []any{map[string]any{"Action": "*"}}}
-	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_NotAPolicyShape(t *testing.T) {
