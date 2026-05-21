@@ -243,6 +243,17 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 		maps.Copy(keyTypes, svc.keyTypes)
 	}
 
+	// AssumeRoleWithWebIdentity lets a user-registered OIDC provider
+	// contribute "<provider-hostname>:<keyname>" condition keys. The
+	// provider URL isn't known statically, so the service reference
+	// only lists the AWS-preregistered providers (accounts.google.com,
+	// cognito-identity.amazonaws.com, …). If the statement targets
+	// AssumeRoleWithWebIdentity — directly or via a wildcard pattern
+	// like "sts:AssumeRoleWith*" or "sts:*" — accept any hostname-
+	// prefixed key as a dynamic OIDC provider key instead of flagging
+	// it as unknown.
+	allowsOIDCKeys := statementCoversAction(actions, "sts", "AssumeRoleWithWebIdentity")
+
 	var issues []string
 	for opName, op := range cond {
 		operands, ok := op.(map[string]any)
@@ -256,6 +267,9 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 				continue // AWS-global condition keys are always allowed
 			}
 			if _, ok := allowed[lk]; !ok {
+				if allowsOIDCKeys && isOIDCConditionKey(key) {
+					continue
+				}
 				issues = append(issues, fmt.Sprintf(
 					"Statement[%d]: condition key %q (under %s) is not valid for the statement's actions",
 					stmtIdx, key, opName))
@@ -412,6 +426,92 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		}
 	}
 	return issues, nil
+}
+
+// isOIDCConditionKey reports whether `key` has the shape of a dynamic
+// OIDC condition key — "<hostname>:<keyname>", where the hostname is an
+// RFC-1123 LDH domain name (two or more labels of [A-Za-z0-9] with
+// optional internal hyphens, separated by '.').
+//
+// The helper deliberately recognizes only the single-colon hostname form.
+// Some IAM condition keys legitimately use multiple colons (KMS encryption
+// context keys like "kms:EncryptionContext:aws:s3:arn", for instance), but
+// those are catalog-listed and flow through the normal check. Restricting
+// this carve-out to one colon keeps it from masking typos that happen to
+// contain extra colons. The dot requirement (two labels minimum) is what
+// separates an OIDC key from a regular catalog key like "s3:GetObject" or
+// "sts:RoleSessionName"; the latter have no dot in the prefix and continue
+// to flow through the strict catalog check.
+func isOIDCConditionKey(key string) bool {
+	if strings.Count(key, ":") != 1 {
+		return false
+	}
+	colon := strings.IndexByte(key, ':')
+	if colon == 0 || colon == len(key)-1 {
+		return false
+	}
+	return isLDHHostname(key[:colon])
+}
+
+// isLDHHostname reports whether host is a valid RFC-1123 LDH domain name
+// with at least two labels. Each label must be 1–63 chars long, contain
+// only [A-Za-z0-9-], and may not start or end with a hyphen. Empty labels
+// (consecutive dots) and leading/trailing dots are rejected. The empty
+// string falls through naturally — strings.Split("", ".") returns [""]
+// which has length 1 and fails the label-count guard.
+func isLDHHostname(host string) bool {
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if !isLDHLabel(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLDHLabel(s string) bool {
+	if s == "" || len(s) > 63 {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9':
+		case c == '-':
+			if i == 0 || i == len(s)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// statementCoversAction reports whether any of the given action tokens
+// resolves (directly or via an IAM wildcard pattern) to the action
+// "<service>:<name>". Lets carve-outs like the OIDC condition-key
+// allowance trigger uniformly for the literal action and for the
+// wildcard forms ("sts:*", "sts:AssumeRoleWith*") that checkOne accepts.
+func statementCoversAction(actions []string, service, name string) bool {
+	target := strings.ToLower(name)
+	for _, a := range actions {
+		prefix, n, ok := splitAction(a)
+		if !ok || !strings.EqualFold(prefix, service) {
+			continue
+		}
+		if strings.EqualFold(n, name) {
+			return true
+		}
+		if strings.ContainsAny(n, "*?") && compileActionPattern(n).MatchString(target) {
+			return true
+		}
+	}
+	return false
 }
 
 // splitAction parses "service:action" into its parts. Returns ok=false when
