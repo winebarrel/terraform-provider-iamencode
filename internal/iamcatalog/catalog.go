@@ -14,18 +14,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 )
-
-// Default is the process-wide catalog used by the strict validator. It is a
-// package-level var so tests can swap it for one backed by an httptest server
-// (production callers should not reassign it).
-var Default = New(os.Getenv("IAMENCODE_SERVICEREF_ENDPOINT"))
 
 const (
 	DefaultEndpoint = "https://servicereference.us-east-1.amazonaws.com"
@@ -36,10 +30,6 @@ var (
 	// ErrUnknownService — the prefix is not present in the AWS service index.
 	// The caller should treat this as a validation failure (likely a typo).
 	ErrUnknownService = errors.New("unknown AWS service prefix")
-
-	// ErrUnknownAction — the action does not appear in that service's catalog.
-	// The caller should treat this as a validation failure (likely a typo).
-	ErrUnknownAction = errors.New("unknown action for AWS service")
 
 	// ErrUnavailable — the catalog could not be fetched (network down, timeout,
 	// HTTP error). The caller should treat this as "skip catalog validation"

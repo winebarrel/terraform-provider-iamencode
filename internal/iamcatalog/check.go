@@ -19,12 +19,12 @@ import (
 // Network failures degrade gracefully: ErrUnavailable from a lookup skips that
 // action rather than failing the whole call. Only "definitely a typo" results
 // (ErrUnknownService, unknown action under a known service) surface as errors.
-func CheckActions(ctx context.Context, policy any) error {
+func CheckActions(ctx context.Context, c *Catalog, policy any) error {
 	stmts := statements(policy)
 	var issues []string
 	for i, s := range stmts {
 		for _, a := range actionsOf(s) {
-			if msg := checkOne(ctx, a, i); msg != "" {
+			if msg := checkOne(ctx, c, a, i); msg != "" {
 				issues = append(issues, msg)
 			}
 		}
@@ -35,7 +35,7 @@ func CheckActions(ctx context.Context, policy any) error {
 	return errors.New(strings.Join(issues, "\n"))
 }
 
-func checkOne(ctx context.Context, action string, stmtIndex int) string {
+func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) string {
 	prefix, name, ok := splitAction(action)
 	if !ok {
 		return "" // not "service:action" shape — schema would have caught real malformations
@@ -43,7 +43,7 @@ func checkOne(ctx context.Context, action string, stmtIndex int) string {
 	if strings.ContainsRune(prefix, '*') || strings.ContainsRune(name, '*') {
 		return "" // wildcards: out of scope for the catalog check
 	}
-	svc, err := Default.Lookup(ctx, prefix)
+	svc, err := c.Lookup(ctx, prefix)
 	switch {
 	case errors.Is(err, ErrUnavailable):
 		return "" // graceful degrade

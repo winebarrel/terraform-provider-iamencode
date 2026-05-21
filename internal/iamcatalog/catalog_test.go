@@ -235,9 +235,7 @@ func TestCatalog_Lookup_InvalidURLInIndex(t *testing.T) {
 }
 
 func TestErrors_AreDistinct(t *testing.T) {
-	// Sanity: the three sentinel errors must not alias each other; callers
-	// switch on them to decide between "fail" and "skip".
+	// Sanity: the sentinel errors must not alias each other; callers switch
+	// on them to decide between "fail" and "skip".
 	assert.False(t, errors.Is(ErrUnknownService, ErrUnavailable))
-	assert.False(t, errors.Is(ErrUnknownAction, ErrUnavailable))
-	assert.False(t, errors.Is(ErrUnknownService, ErrUnknownAction))
 }

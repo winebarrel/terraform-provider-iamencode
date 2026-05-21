@@ -13,11 +13,12 @@ import (
 
 var _ function.Function = PolicyStrictFunction{}
 
-func NewPolicyStrictFunction() function.Function {
-	return PolicyStrictFunction{}
+// PolicyStrictFunction carries the catalog instance it consults, rather than
+// reaching for a package-level singleton. The provider hands it in when
+// registering the function; tests construct it directly with a fake catalog.
+type PolicyStrictFunction struct {
+	catalog *iamcatalog.Catalog
 }
-
-type PolicyStrictFunction struct{}
 
 func (r PolicyStrictFunction) Metadata(_ context.Context, _ function.MetadataRequest, resp *function.MetadataResponse) {
 	resp.Name = "policy_strict"
@@ -59,7 +60,7 @@ func (r PolicyStrictFunction) Run(ctx context.Context, req function.RunRequest, 
 		return
 	}
 
-	if err := iamcatalog.CheckActions(ctx, native); err != nil {
+	if err := iamcatalog.CheckActions(ctx, r.catalog, native); err != nil {
 		resp.Error = function.ConcatFuncErrors(resp.Error, function.NewArgumentFuncError(0, fmt.Sprintf("invalid IAM policy:\n%v", err)))
 		return
 	}

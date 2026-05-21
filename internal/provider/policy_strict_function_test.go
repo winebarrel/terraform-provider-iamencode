@@ -5,15 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/winebarrel/terraform-provider-iamencode/internal/iamcatalog"
 )
 
-// swapCatalogE2E points iamcatalog.Default at a fake AWS service reference for
-// the duration of the test. The PolicyStrictFunction reads iamcatalog.Default
-// at Run time, so swapping here takes effect even though the provider
-// factories were already constructed at package init.
-func swapCatalogE2E(t *testing.T, services map[string][]string) {
+// startFakeCatalog spins up an httptest server that mimics the AWS service
+// reference root index and per-service JSON, then sets
+// IAMENCODE_SERVICEREF_ENDPOINT so the provider factory wires it in. t.Setenv
+// auto-restores; t.Cleanup tears the server down.
+func startFakeCatalog(t *testing.T, services map[string][]string) {
 	t.Helper()
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -45,13 +43,11 @@ func swapCatalogE2E(t *testing.T, services map[string][]string) {
 			fmt.Fprint(w, "]}")
 		})
 	}
-	prev := iamcatalog.Default
-	iamcatalog.Default = iamcatalog.New(srv.URL)
-	t.Cleanup(func() { iamcatalog.Default = prev })
+	t.Setenv("IAMENCODE_SERVICEREF_ENDPOINT", srv.URL)
 }
 
 func TestPolicyStrictFunction_OK_HCL(t *testing.T) {
-	swapCatalogE2E(t, map[string][]string{"s3": {"GetObject"}})
+	startFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	okStep(t, `
 		output "test" {
 			value = provider::iamencode::policy_strict({
@@ -65,7 +61,7 @@ func TestPolicyStrictFunction_OK_HCL(t *testing.T) {
 }
 
 func TestPolicyStrictFunction_Err_HCL_UnknownAction(t *testing.T) {
-	swapCatalogE2E(t, map[string][]string{"s3": {"GetObject"}})
+	startFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	errStep(t, `
 		output "test" {
 			value = provider::iamencode::policy_strict({
