@@ -30,9 +30,9 @@ func TestRegexIntersects(t *testing.T) {
 	// matching string. Both anchored ^...$ to mirror the shape the rest of
 	// the catalog uses.
 	cases := []struct {
-		name     string
-		a, b     string
-		want     bool
+		name string
+		a, b string
+		want bool
 	}{
 		{
 			name: "identical literal",
