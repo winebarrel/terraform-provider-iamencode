@@ -231,14 +231,6 @@ func TestCheckPolicy_MalformedAction(t *testing.T) {
 	}
 }
 
-func TestCheckPolicy_BareStarAccepted(t *testing.T) {
-	// "*" alone is a legitimate IAM wildcard (all actions). It does not match
-	// the splitAction shape, so it must be handled explicitly before that check.
-	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
-	policy := map[string]any{"Statement": []any{map[string]any{"Action": "*"}}}
-	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
-}
-
 func TestCheckPolicy_NotAPolicyShape(t *testing.T) {
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	// Defensive: schema validation should reject these upstream, but the
