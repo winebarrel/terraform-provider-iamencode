@@ -1293,6 +1293,67 @@ func TestCheckPolicy_Resource_AllActionsMalformed_SkipsCheck(t *testing.T) {
 	assert.NotContains(t, err.Error(), "does not match")
 }
 
+// withServiceLevelAction wires up a service with one normal action (operates
+// on a "thing" resource) and one service-level action (Resources is nil —
+// the AWS service reference shape for actions like iam:ListUsers).
+func withServiceLevelAction(t *testing.T) *Catalog {
+	t.Helper()
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions: map[string][]string{
+				"WriteThing":    nil,
+				"ListAllThings": nil,
+			},
+			actionResources: map[string][]string{
+				"WriteThing": {"thing"},
+				// "ListAllThings" omitted → empty Resources in service-reference
+			},
+			resources: map[string][]string{
+				"thing": {"arn:${Partition}:svc:::${Name}"},
+			},
+		},
+	})
+	return New(fs.server.URL)
+}
+
+func TestCheckPolicy_Resource_ServiceLevelAction_AcceptsServiceShapedArn(t *testing.T) {
+	// When the service reference declares an action with no Resources
+	// (e.g. iam:ListUsers), IAM evaluates it at the account scope. The
+	// AWS-documented "let users self-manage" pattern still pairs these
+	// actions with a concrete IAM-shaped Resource ARN
+	// ("arn:aws:iam::ACCOUNT:user/"); the validator must accept any
+	// service-shaped ARN rather than rejecting against the empty
+	// per-action pattern set.
+	c := withServiceLevelAction(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:ListAllThings",
+				"Resource": "arn:aws:svc:::main",
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_ServiceLevelAction_RejectsCrossServiceArn(t *testing.T) {
+	// The allArns fallback only widens within the same service. A
+	// resource belonging to a different service is still flagged so
+	// real cross-service typos don't slip through.
+	c := withServiceLevelAction(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:ListAllThings",
+				"Resource": "arn:aws:OTHERSVC:::main",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
+}
+
 func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 	// Typo'd action: checkOne reports it; checkResources falls back to the
 	// service-wide ARN union so a valid s3 ARN doesn't ALSO get flagged as
