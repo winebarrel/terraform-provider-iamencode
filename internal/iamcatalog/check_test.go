@@ -1594,10 +1594,124 @@ func TestCheckPolicy_Resource_SlashExtendedSibling_LastPlaceholderStaysBounded(t
 	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
 
+// withLambdaShape wires up a service with a base "function" resource and
+// a colon-extension "function-alias" sibling — the structural shape AWS
+// uses for Lambda function vs function-alias / function-version. Used by
+// the qualifier-tail end-to-end tests below.
+func withLambdaShape(t *testing.T) *Catalog {
+	t.Helper()
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions: map[string][]string{
+				"InvokeThing": nil,
+			},
+			actionResources: map[string][]string{
+				"InvokeThing": {"thing"}, // base resource only, mirroring lambda:InvokeFunction
+			},
+			resources: map[string][]string{
+				"thing":         {"arn:${Partition}:svc:${Region}:${Account}:thing:${ThingName}"},
+				"thing-alias":   {"arn:${Partition}:svc:${Region}:${Account}:thing:${ThingName}:${Alias}"},
+				"thing-version": {"arn:${Partition}:svc:${Region}:${Account}:thing:${ThingName}:${Version}"},
+			},
+		},
+	})
+	return New(fs.server.URL)
+}
+
+func TestCheckPolicy_Resource_QualifierTail_Accepted(t *testing.T) {
+	// The base "thing" resource has colon-extending siblings ("thing:${A}",
+	// "thing:${V}"). IAM accepts qualified ARNs on the base action, and the
+	// strict validator should too — even though the catalog only lists the
+	// base resource type against the action.
+	c := withLambdaShape(t)
+	for _, arn := range []string{
+		"arn:aws:svc:us-east-1:123456789012:thing:my-thing",
+		"arn:aws:svc:us-east-1:123456789012:thing:my-thing:my-alias",
+		"arn:aws:svc:us-east-1:123456789012:thing:my-thing:5",
+		"arn:aws:svc:us-east-1:123456789012:thing:my-thing:$LATEST",
+		"arn:aws:svc:us-east-1:123456789012:thing:my-thing:*",
+	} {
+		t.Run(arn, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{"Action": "svc:InvokeThing", "Resource": arn},
+				},
+			}
+			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+		})
+	}
+}
+
+func TestCheckPolicy_Resource_QualifierTail_RejectsTwoDeep(t *testing.T) {
+	// AWS only nests one qualifier level (alias or version). A second
+	// colon-separated segment after the qualifier doesn't correspond to any
+	// real AWS form and must still be flagged.
+	c := withLambdaShape(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:InvokeThing",
+				"Resource": "arn:aws:svc:us-east-1:123456789012:thing:my-thing:alias:extra",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
+}
+
 func TestCompileARNTemplate_MalformedReturnsNil(t *testing.T) {
 	// An unterminated ${ should not panic or compile garbage; the parser
 	// returns nil and the caller drops the template.
 	assert.Nil(t, compileARNTemplate("arn:${broken", nil))
+}
+
+func TestCompileARNTemplate_ColonExtendedSiblingAllowsQualifierTail(t *testing.T) {
+	// Lambda's "function:${F}" base has a "function:${F}:${Alias}" sibling.
+	// The colon-extension means the base regex must accept "function:f" and
+	// "function:f:my-alias" but reject "function:f:alias:typo" (AWS doesn't
+	// have two-deep qualifiers). The literal IAM wildcard form ":*" continues
+	// to work via the new regex's "[^:]+" segment.
+	base := "arn:${Partition}:lambda:${Region}:${Account}:function:${FunctionName}"
+	alias := "arn:${Partition}:lambda:${Region}:${Account}:function:${FunctionName}:${Alias}"
+	re := compileARNTemplate(base, []string{base, alias})
+	require.NotNil(t, re)
+	for _, ok := range []string{
+		"arn:aws:lambda:us-east-1:123456789012:function:my-fn",
+		"arn:aws:lambda:us-east-1:123456789012:function:my-fn:my-alias",
+		"arn:aws:lambda:us-east-1:123456789012:function:my-fn:5",
+		"arn:aws:lambda:us-east-1:123456789012:function:my-fn:$LATEST",
+		"arn:aws:lambda:us-east-1:123456789012:function:my-fn:*",
+		"arn:aws:lambda:us-east-1:123456789012:function:my-fn*",
+	} {
+		assert.True(t, re.MatchString(ok), "should match: %s", ok)
+	}
+	for _, bad := range []string{
+		"arn:aws:lambda:us-east-1:123456789012:function:my-fn:alias:extra",
+		"arn:aws:s3:::not-lambda", // wrong service
+	} {
+		assert.False(t, re.MatchString(bad), "should NOT match: %s", bad)
+	}
+}
+
+func TestCompileARNTemplate_LiteralBetweenColonSiblingKeepsRule4(t *testing.T) {
+	// CloudWatch Logs log-group's sibling extends with ":log-stream:${LS}" —
+	// the literal "log-stream" between the colon and the next "${" means
+	// rule 3a does NOT fire. Rule 4 stays in force and the only colon-tail
+	// accepted on the base is the IAM wildcard ":*" / ":?". A concrete
+	// "<group>:log-stream:<stream>" must still fail against the log-group
+	// template (it has to match log-stream's own template instead).
+	base := "arn:${Partition}:logs:${Region}:${Account}:log-group:${LogGroupName}"
+	stream := "arn:${Partition}:logs:${Region}:${Account}:log-group:${LogGroupName}:log-stream:${LogStreamName}"
+	re := compileARNTemplate(base, []string{base, stream})
+	require.NotNil(t, re)
+	assert.True(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:/aws/codebuild/foo"))
+	assert.True(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:/aws/codebuild/foo:*"))
+	// log-stream form must NOT match the log-group base.
+	assert.False(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:foo:log-stream:bar"))
+	// A literal qualifier tail (no wildcard) must NOT match the base either —
+	// rule 4 only allows IAM wildcard tails.
+	assert.False(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:foo:bar"))
 }
 
 func TestSplitAction(t *testing.T) {

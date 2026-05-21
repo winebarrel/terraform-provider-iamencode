@@ -426,10 +426,11 @@ func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 
 // arnPlaceholderPattern returns the regex fragment that should occupy a
 // single placeholder position in the compiled template. Most rules return
-// a bare character class ("[^:]*", "[^:/]*", ".*"), but rule 4 returns a
-// composite fragment ("[^:]*(?::[*?])*") that pairs a bounded segment with
-// an optional IAM-wildcard tail; treat the return value as an arbitrary
-// regex fragment rather than a pure character class.
+// a bare character class ("[^:]*", "[^:/]*", ".*"), but rules 3a and 4
+// return composite fragments ("[^:]*(?::[^:]+)?" and "[^:]*(?::[*?])*"
+// respectively) that pair a bounded segment with an optional tail; treat
+// the return value as an arbitrary regex fragment rather than a pure
+// character class.
 //
 // The rules, applied in order:
 //
@@ -449,15 +450,33 @@ func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 //     template adds "/${ObjectName}", so an ARN with '/' is really an
 //     object ARN and shouldn't satisfy the bucket-only resource.
 //
+//     3a. Last placeholder where a sibling colon-extends with ":${...}"
+//     (a colon followed immediately by another placeholder, no literal
+//     in between) → "[^:]*(?::[^:]+)?". This is the "qualifier tail"
+//     shape: AWS's lambda function/layer, lex bot, states stateMachine,
+//     etc. all add a single ":${Version}" or ":${Alias}" sibling to a
+//     base resource type. The catalog declares those as separate
+//     resource types and lists the base action against only the base
+//     type, so a literal alias ARN like
+//     "arn:aws:lambda:r:a:function:f:my-alias" would otherwise be
+//     rejected on lambda:InvokeFunction. The trailing "(?::[^:]+)?" is
+//     a single optional segment, so AWS's two-deep forms aren't
+//     accidentally allowed (no "function:f:alias:typo"). Sibling
+//     extensions with a literal between the colon and the next
+//     placeholder ("...:log-group:${LG}:log-stream:${LS}") do not
+//     trigger this rule — those are structural child resources, not
+//     free-form qualifiers, and continue to use rule 4.
+//
 //  4. Last placeholder otherwise → "[^:]*(?::[*?])*". CloudWatch Logs
 //     log-group ARNs land here: log group names contain '/'
 //     ("/aws/codebuild/foo"), and the log-stream sibling extends with
-//     ':' not '/', so rule 3 doesn't trigger. The base class is "[^:]*"
-//     (allow '/', forbid ':') so concrete child-resource ARNs like
-//     "...:group:foo:sub:bar" don't accidentally satisfy a short-only
-//     action's template. The trailing "(?::[*?])*" group additionally
-//     accepts IAM wildcard tails like ":*" or ":?:*" — the canonical
-//     CodeBuild policy ("...:log-group:/aws/codebuild/proj:*") relies
+//     ':log-stream:' (a literal between the colon and the next
+//     placeholder), so neither rule 3 nor 3a triggers. The base class
+//     is "[^:]*" (allow '/', forbid ':') so concrete child-resource
+//     ARNs like "...:group:foo:sub:bar" don't accidentally satisfy a
+//     short-only action's template. The trailing "(?::[*?])*" group
+//     additionally accepts IAM wildcard tails like ":*" or ":?:*" —
+//     the canonical CodeBuild policy ("...:log-group:/aws/codebuild/proj:*") relies
 //     on this to refer to "the group plus any sub-resource."
 //
 //  5. Default (non-last placeholder, not followed by '/') → "[^:]*".
@@ -481,6 +500,19 @@ func arnPlaceholderPattern(tmpl string, p [2]int, idx, lastIdx int, siblings []s
 		}
 		if len(s) > p[1] && s[:p[1]] == tmpl[:p[1]] && s[p[1]] == '/' {
 			return "[^:/]*"
+		}
+	}
+	for _, s := range siblings {
+		if s == tmpl {
+			continue
+		}
+		// Rule 3a: a sibling colon-extends with ":${...}" → allow a single
+		// qualifier tail. The next two characters after the colon must be
+		// "${", i.e. the placeholder begins immediately. Sibling extensions
+		// with a literal between (":log-stream:${LS}") don't match here.
+		if len(s) >= p[1]+3 && s[:p[1]] == tmpl[:p[1]] &&
+			s[p[1]] == ':' && s[p[1]+1] == '$' && s[p[1]+2] == '{' {
+			return "[^:]*(?::[^:]+)?"
 		}
 	}
 	return "[^:]*(?::[*?])*"
