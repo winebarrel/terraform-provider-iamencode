@@ -866,25 +866,29 @@ func TestCheckPolicy_Resource_BareStar_InsideList(t *testing.T) {
 }
 
 func TestCheckPolicy_Resource_WildcardWithinARN(t *testing.T) {
-	// "arn:aws:s3:::*" is a valid IAM wildcard for "any bucket" — the
-	// catalog's bucket template matches it as a bucket-level ARN. For
-	// GetObject (object-only) it shouldn't match, since the object template
-	// requires "/${ObjectName}".
+	// "arn:aws:s3:::*" is an IAM wildcard ARN. IAM treats '*' as "any
+	// chars, including ':' and '/'", so the same value can satisfy
+	// either the bucket template (when '*' expands to a bucket name)
+	// or the object template (when '*' expands to "bucket/key"). The
+	// validator follows IAM's semantics here: when strict matching
+	// fails and the value carries '*' or '?', it falls back to a
+	// language-intersection check. The bucket-vs-object distinction
+	// is still enforced for *concrete* ARNs — see
+	// TestCheckPolicy_Resource_BucketArnOnObjectAction_Rejected.
 	c := withResources(t)
-	policy := map[string]any{
-		"Statement": []any{
-			map[string]any{
-				"Action":   "s3:ListBucket",
-				"Resource": "arn:aws:s3:::*",
-			},
-		},
+	for _, action := range []string{"s3:ListBucket", "s3:GetObject"} {
+		t.Run(action, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action":   action,
+						"Resource": "arn:aws:s3:::*",
+					},
+				},
+			}
+			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+		})
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
-
-	policy["Statement"].([]any)[0].(map[string]any)["Action"] = "s3:GetObject"
-	err := CheckPolicy(context.Background(), c, policy)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "arn:aws:s3:::*")
 }
 
 func TestCheckPolicy_Resource_MultipleActions_UnionsPatterns(t *testing.T) {
@@ -1188,6 +1192,84 @@ func TestCheckPolicy_Resource_IamWildcardSpansColon(t *testing.T) {
 		},
 	}
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_IamWildcard_SpansColonExtensionLiteral(t *testing.T) {
+	// When the action only targets the long resource (e.g. log-stream), the
+	// user often writes the short-template prefix plus an IAM ":*" tail —
+	// expecting IAM to expand ":*" over the literal ":sub:<name>" segment
+	// the long template requires. Strict regex matching can't honor that
+	// (':' is a hard separator), so the validator falls back to the
+	// language-intersection check.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": []any{"svc:WriteSub"},
+				"Resource": []any{
+					"arn:aws:svc:r:a:group:/path/to/foo:*",
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_IamWildcard_BroadServicePrefix(t *testing.T) {
+	// "arn:aws:svc:*:*:*" is a fully-wildcarded ARN — every segment after
+	// the service prefix is '*'. IAM expands these wildcards over the
+	// template's literal anchors (":group:" etc.), so the validator must
+	// accept it via the intersection check rather than insisting on the
+	// literal anchors appearing in the user value.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": []any{"svc:WriteGroup", "svc:WriteSub"},
+				"Resource": []any{
+					"arn:aws:svc:*:*:*",
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_IamWildcard_RejectsCrossServiceMismatch(t *testing.T) {
+	// The intersection fallback must still reject obvious typos. A
+	// wildcard-laden ARN that names the wrong service in its literal
+	// prefix can't be a valid expansion of the template, no matter how
+	// far IAM '*' is allowed to span.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:WriteGroup",
+				"Resource": "arn:aws:OTHERSVC:r:a:group:/path:*",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
+}
+
+func TestCheckPolicy_Resource_IamWildcard_RejectsConcreteMismatch(t *testing.T) {
+	// Sanity: a concrete ARN (no '*' / '?') still goes through the strict
+	// path; the intersection fallback must not engage when there are no
+	// wildcards to expand.
+	c := withColonExtendedTemplates(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:WriteGroup",
+				"Resource": "arn:aws:OTHERSVC:r:a:group:/path/to/foo",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
 
 func TestCheckPolicy_Resource_ColonExtendedSibling_RejectsConcreteChildShape(t *testing.T) {

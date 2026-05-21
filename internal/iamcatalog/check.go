@@ -399,7 +399,7 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		}
 		matched := false
 		for _, p := range patterns {
-			if p.MatchString(r) {
+			if matchesARN(p, r) {
 				matched = true
 				break
 			}
