@@ -4,12 +4,15 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"strings"
+	"sync"
 )
 
-// maxResourceLen caps the user-supplied Resource value length we feed into
-// the intersection check. AWS IAM caps ARN strings at 2048 bytes; anything
-// longer is almost certainly a runaway expression and we want to fail
-// closed rather than pay an unbounded BFS for it.
+// maxResourceLen caps the user-supplied Resource value we feed into the
+// intersection check. Production AWS resource ARNs sit comfortably under
+// 2048 bytes (the IAM role-ARN cap and a common API limit); 4096 doubles
+// that for slack, while still drawing a line short enough to keep the
+// BFS bounded. Beyond this we return false (fail closed) without trying
+// to compile or intersect.
 const maxResourceLen = 4096
 
 // matchesARN reports whether `value` is accepted by the compiled ARN
@@ -69,6 +72,12 @@ func iamWildcardToRegex(s string) string {
 // regexIntersects reports whether two regex source strings share any
 // matching string — i.e. whether L(srcA) ∩ L(srcB) is non-empty. Returns
 // false on parse/compile errors (treated as "cannot prove intersection").
+//
+// Both sides go through the per-process syntax.Prog cache. Template
+// sources repeat across every ARN check inside a service, and user
+// patterns repeat when the same Resource value is tested against
+// multiple action templates, so the cache turns the inner loop of
+// checkResources into a hash lookup plus a BFS.
 func regexIntersects(srcA, srcB string) bool {
 	pa, err := compileSyntaxProg(srcA)
 	if err != nil {
@@ -81,7 +90,27 @@ func regexIntersects(srcA, srcB string) bool {
 	return progsIntersect(pa, pb)
 }
 
+// progCache memoizes regex source → *syntax.Prog. syntax.Prog is
+// read-only after compile, so sharing a single instance across goroutines
+// (and across the resources × patterns loop in checkResources) is safe.
+var progCache sync.Map // map[string]progCacheEntry
+
+type progCacheEntry struct {
+	prog *syntax.Prog
+	err  error
+}
+
 func compileSyntaxProg(src string) (*syntax.Prog, error) {
+	if v, ok := progCache.Load(src); ok {
+		e := v.(progCacheEntry)
+		return e.prog, e.err
+	}
+	prog, err := parseAndCompile(src)
+	progCache.Store(src, progCacheEntry{prog: prog, err: err})
+	return prog, err
+}
+
+func parseAndCompile(src string) (*syntax.Prog, error) {
 	re, err := syntax.Parse(src, syntax.Perl)
 	if err != nil {
 		return nil, err
@@ -123,7 +152,7 @@ func progsIntersect(pa, pb *syntax.Prog) bool {
 	}
 
 	for len(queue) > 0 {
-		if len(seen) > maxProductStates {
+		if len(seen) >= maxProductStates {
 			return false
 		}
 		s := queue[0]
