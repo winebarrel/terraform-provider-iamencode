@@ -639,30 +639,109 @@ func TestCheckPolicy_ConditionKey_OIDCRequiresDottedHostnamePrefix(t *testing.T)
 
 func TestIsOIDCConditionKey(t *testing.T) {
 	// Direct unit test for the hostname-prefix predicate. Drives the
-	// LDH-charset, dot-required, single-colon rules.
+	// LDH-charset, dot-required, single-colon, and label-shape rules.
 	cases := []struct {
 		in   string
 		want bool
 	}{
+		// Happy path — real OIDC issuer hostnames.
 		{"oidc.example.com:sub", true},
 		{"oidc.example.com:aud", true},
-		// Multi-label hostname prefix (covers the deepest realistic case).
+		{"token.actions.githubusercontent.com:sub", true},
 		{"id.subdomain.example.org:sub", true},
-		// No dot — looks like a normal service-prefixed key.
+		// Hostnames are case-insensitive.
+		{"OIDC.Example.COM:sub", true},
+		// Hyphen inside labels is fine.
+		{"my-oidc.example-co.com:sub", true},
+
+		// Not OIDC — single-label / no dot. Falls through to catalog check.
 		{"sts:RoleSessionName", false},
 		{"saml:aud", false},
+		{"localhost:sub", false},
+
 		// Missing pieces.
 		{"oidc.example.com:", false},
 		{":sub", false},
 		{"oidc.example.com", false},
-		// Disallowed characters (slash) — clearly not a hostname prefix.
+		{"", false},
+
+		// Multi-colon — single-colon rule.
+		{"oidc.example.com:sub:extra", false},
+		{"a.b:c:d", false},
+
+		// Leading / trailing dot, empty labels.
+		{".example.com:sub", false},
+		{"example.com.:sub", false},
+		{"a..b:sub", false},
+
+		// Labels can't start or end with hyphen.
+		{"-a.b:sub", false},
+		{"a-.b:sub", false},
+		{"a.-b:sub", false},
+		{"a.b-:sub", false},
+
+		// Disallowed characters.
 		{"oidc/example.com:sub", false},
+		{"oidc_example.com:sub", false},
+		{"oidc.example.com/path:sub", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
 			assert.Equal(t, tc.want, isOIDCConditionKey(tc.in))
 		})
 	}
+}
+
+func TestCheckPolicy_ConditionKey_OIDCAcceptedForWildcardActions(t *testing.T) {
+	// Wildcard action patterns that cover AssumeRoleWithWebIdentity must
+	// also enable the OIDC carve-out. Without this, the common shorthand
+	// "sts:AssumeRoleWith*" or "sts:*" in a federation policy would still
+	// flag every "<hostname>:<key>" condition entry.
+	c := withStsForOIDC(t)
+	for _, action := range []string{
+		"sts:AssumeRoleWithWebIdentity", // exact
+		"sts:AssumeRoleWith*",           // common prefix wildcard
+		"sts:AssumeRoleWithWeb*",        // longer prefix
+		"sts:*",                         // service-wide
+		"sts:AssumeRoleW?thWebIdentity", // single-char wildcard
+	} {
+		t.Run(action, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action": action,
+						"Condition": map[string]any{
+							"StringLike": map[string]any{
+								"oidc.example.com:sub": "repo:org/proj:*",
+							},
+						},
+					},
+				},
+			}
+			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+		})
+	}
+}
+
+func TestCheckPolicy_ConditionKey_OIDCNotTriggeredByOtherServiceWildcards(t *testing.T) {
+	// Wildcard patterns from unrelated services must not turn on the OIDC
+	// carve-out — "lambda:*" does not cover sts:AssumeRoleWithWebIdentity.
+	c := withStsForOIDC(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "sts:TagSession",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"oidc.example.com:sub": "repo:org/proj",
+					},
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"oidc.example.com:sub"`)
 }
 
 func TestCheckPolicy_ConditionType_OperatorMatchesKeyType(t *testing.T) {
