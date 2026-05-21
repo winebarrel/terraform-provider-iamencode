@@ -6,7 +6,7 @@ terraform {
   }
 }
 
-# policy_strict catches mistakes the schema alone cannot. Three examples:
+# policy_strict catches mistakes the schema alone cannot. Four examples:
 #
 #   - Replace "GetObject" with e.g. "Frobnicate":
 #       Statement[1]: unknown action "Frobnicate" for service "s3"
@@ -14,6 +14,10 @@ terraform {
 #   - Move "s3:prefix" under the s3:GetObject statement:
 #       Statement[1]: condition key "s3:prefix" (under StringEquals)
 #         is not valid for the statement's actions
+#
+#   - Change NumericLessThan to StringEquals on s3:max-keys:
+#       Statement[0]: operator StringEquals expects a String key,
+#         but "s3:max-keys" is declared as Numeric
 #
 #   - Use a bucket-only ARN on the object-reading statement:
 #       Statement[1]: resource "arn:aws:s3:::my-bucket" does not match
@@ -28,7 +32,8 @@ output "bucket_policy" {
         Action   = "s3:ListBucket"
         Resource = "arn:aws:s3:::my-bucket"
         Condition = {
-          StringEquals = { "s3:prefix" = "logs/" }
+          StringEquals    = { "s3:prefix" = "logs/" }
+          NumericLessThan = { "s3:max-keys" = "1000" }
         }
       },
       {
