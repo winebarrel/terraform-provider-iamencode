@@ -31,9 +31,9 @@ func TestIamWildcardToRegex(t *testing.T) {
 func TestRegexIntersects_MalformedFailsClosed(t *testing.T) {
 	// Unparseable regex sources should propagate as "no intersection
 	// proven" rather than panic. The validator drops the pattern silently
-	// if compilation fails (it should never happen in normal flow — both
-	// sides come from us — but the helper is exported within the package
-	// and the defensive return is worth covering).
+	// if compilation fails — it should never happen in normal flow, since
+	// both sides come from us, but the package-private helper guards
+	// against it and the defensive return is worth covering.
 	assert.False(t, regexIntersects("[unterminated", "^a$"))
 	assert.False(t, regexIntersects("^a$", "[unterminated"))
 }

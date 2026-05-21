@@ -70,47 +70,50 @@ func iamWildcardToRegex(s string) string {
 }
 
 // regexIntersects reports whether two regex source strings share any
-// matching string — i.e. whether L(srcA) ∩ L(srcB) is non-empty. Returns
-// false on parse/compile errors (treated as "cannot prove intersection").
+// matching string — i.e. whether L(tmplSrc) ∩ L(userSrc) is non-empty.
+// Returns false on parse/compile errors (treated as "cannot prove
+// intersection").
 //
-// Both sides go through the per-process syntax.Prog cache. Template
-// sources repeat across every ARN check inside a service, and user
-// patterns repeat when the same Resource value is tested against
-// multiple action templates, so the cache turns the inner loop of
-// checkResources into a hash lookup plus a BFS.
-func regexIntersects(srcA, srcB string) bool {
-	pa, err := compileSyntaxProg(srcA)
+// Only the template side is memoized. Template sources repeat for every
+// ARN tested in a service, so caching them turns the inner loop of
+// checkResources into a hash lookup. User patterns are NOT cached: their
+// source space is unbounded (configs can list arbitrarily many distinct
+// wildcarded Resource values), and sync.Map has no eviction — caching
+// them would let a config bloat process memory.
+func regexIntersects(tmplSrc, userSrc string) bool {
+	pa, err := cachedTemplateProg(tmplSrc)
 	if err != nil {
 		return false
 	}
-	pb, err := compileSyntaxProg(srcB)
+	pb, err := compileSyntaxProg(userSrc)
 	if err != nil {
 		return false
 	}
 	return progsIntersect(pa, pb)
 }
 
-// progCache memoizes regex source → *syntax.Prog. syntax.Prog is
-// read-only after compile, so sharing a single instance across goroutines
-// (and across the resources × patterns loop in checkResources) is safe.
-var progCache sync.Map // map[string]progCacheEntry
+// templateProgCache memoizes template regex source → *syntax.Prog.
+// syntax.Prog is read-only after compile, so sharing a single instance
+// across goroutines (and across the resources × patterns loop in
+// checkResources) is safe.
+var templateProgCache sync.Map // map[string]progCacheEntry
 
 type progCacheEntry struct {
 	prog *syntax.Prog
 	err  error
 }
 
-func compileSyntaxProg(src string) (*syntax.Prog, error) {
-	if v, ok := progCache.Load(src); ok {
+func cachedTemplateProg(src string) (*syntax.Prog, error) {
+	if v, ok := templateProgCache.Load(src); ok {
 		e := v.(progCacheEntry)
 		return e.prog, e.err
 	}
-	prog, err := parseAndCompile(src)
-	progCache.Store(src, progCacheEntry{prog: prog, err: err})
+	prog, err := compileSyntaxProg(src)
+	templateProgCache.Store(src, progCacheEntry{prog: prog, err: err})
 	return prog, err
 }
 
-func parseAndCompile(src string) (*syntax.Prog, error) {
+func compileSyntaxProg(src string) (*syntax.Prog, error) {
 	re, err := syntax.Parse(src, syntax.Perl)
 	if err != nil {
 		return nil, err
@@ -199,11 +202,37 @@ func isCharOp(op syntax.InstOp) bool {
 }
 
 // runesOverlap reports whether two char-consuming instructions accept at
-// least one common rune.
+// least one common rune. Hot path inside the BFS — uses iterRanges to
+// avoid the per-call slice allocations the previous "acceptedRanges
+// returning [][2]rune" shape produced.
 func runesOverlap(ia, ib syntax.Inst) bool {
-	for _, ra := range acceptedRanges(ia) {
-		for _, rb := range acceptedRanges(ib) {
-			if ra[0] <= rb[1] && rb[0] <= ra[1] {
+	return iterRanges(ia, func(lo1, hi1 rune) bool {
+		return iterRanges(ib, func(lo2, hi2 rune) bool {
+			return lo1 <= hi2 && lo2 <= hi1
+		})
+	})
+}
+
+// iterRanges calls fn for each inclusive [lo, hi] rune range accepted by
+// the instruction. Returns true as soon as fn returns true (used as the
+// "stop, overlap found" signal). The shape of syntax.Inst.Rune varies by
+// Op: InstRune1 stores the single rune in Rune[0]; InstRune stores
+// alternating low/high boundaries (lo0, hi0, lo1, hi1, ...); the InstRune*
+// "any" variants don't use Rune at all.
+func iterRanges(i syntax.Inst, fn func(lo, hi rune) bool) bool {
+	switch i.Op {
+	case syntax.InstRuneAny:
+		return fn(0, 0x10ffff)
+	case syntax.InstRuneAnyNotNL:
+		if fn(0, '\n'-1) {
+			return true
+		}
+		return fn('\n'+1, 0x10ffff)
+	case syntax.InstRune1:
+		return fn(i.Rune[0], i.Rune[0])
+	case syntax.InstRune:
+		for j := 0; j+1 < len(i.Rune); j += 2 {
+			if fn(i.Rune[j], i.Rune[j+1]) {
 				return true
 			}
 		}
@@ -211,26 +240,14 @@ func runesOverlap(ia, ib syntax.Inst) bool {
 	return false
 }
 
-// acceptedRanges returns the inclusive rune ranges accepted by one
-// char-consuming instruction. The shape of syntax.Inst.Rune varies by Op:
-// InstRune1 stores the single rune in Rune[0]; InstRune stores
-// alternating low/high boundaries (lo0, hi0, lo1, hi1, ...); the InstRune*
-// "any" variants don't use Rune at all.
+// acceptedRanges is the test-friendly view of iterRanges — it returns
+// the same ranges as a slice. Not used on the hot path; kept so the
+// behavior of the underlying rune dispatch can be asserted directly.
 func acceptedRanges(i syntax.Inst) [][2]rune {
-	switch i.Op {
-	case syntax.InstRuneAny:
-		return [][2]rune{{0, 0x10ffff}}
-	case syntax.InstRuneAnyNotNL:
-		return [][2]rune{{0, '\n' - 1}, {'\n' + 1, 0x10ffff}}
-	case syntax.InstRune1:
-		r := i.Rune[0]
-		return [][2]rune{{r, r}}
-	case syntax.InstRune:
-		ranges := make([][2]rune, 0, len(i.Rune)/2)
-		for j := 0; j+1 < len(i.Rune); j += 2 {
-			ranges = append(ranges, [2]rune{i.Rune[j], i.Rune[j+1]})
-		}
-		return ranges
-	}
-	return nil
+	var ranges [][2]rune
+	iterRanges(i, func(lo, hi rune) bool {
+		ranges = append(ranges, [2]rune{lo, hi})
+		return false
+	})
+	return ranges
 }
