@@ -20,15 +20,22 @@ import (
 //     the service-wide ConditionKeys list when the action is a wildcard).
 //
 // Wildcard tokens (the bare "*", or "*" anywhere within a service:action pair)
-// are accepted without consulting the catalog — pattern expansion is out of
-// scope. Strings that are neither "*" nor "service:action" shape are rejected
-// outright: the JSON Schema only checks that Action is a string, so it's our
-// job here to catch values like "GetObject" (missing the service prefix).
+// are out of scope: pattern expansion against the catalog isn't implemented,
+// so we don't try to validate them. Strings that are neither "*" nor
+// "service:action" shape are rejected outright — the JSON Schema only checks
+// that Action is a string, so it's our job here to catch values like
+// "GetObject" (missing the service prefix).
 //
-// Network failures degrade gracefully: ErrUnavailable from a lookup skips that
-// action rather than failing the whole call. A nil catalog is also treated as
-// "unavailable" so a default-constructed PolicyStrictFunction or future caller
-// can't trip a nil-pointer panic.
+// Errors surface, they don't get swallowed:
+//   - ErrUnknownService (a typo'd prefix) — reported per-action; the rest of
+//     the statement is still evaluated so other typos still come out.
+//   - ErrUnavailable (the catalog endpoint is unreachable) — surfaces as a
+//     hard error from CheckPolicy. The whole point of policy_strict is to
+//     consult the catalog; without it the function cannot do its job.
+//
+// A nil catalog is the one exception: it's a defensive guard for default-
+// constructed PolicyStrictFunction values in tests, not a graceful-degrade
+// path. Production always sets a real catalog.
 func CheckPolicy(ctx context.Context, c *Catalog, policy any) error {
 	if c == nil {
 		return nil
@@ -37,11 +44,19 @@ func CheckPolicy(ctx context.Context, c *Catalog, policy any) error {
 	var issues []string
 	for i, s := range stmts {
 		for _, a := range actionsOf(s) {
-			if msg := checkOne(ctx, c, a, i); msg != "" {
+			msg, err := checkOne(ctx, c, a, i)
+			if err != nil {
+				return err
+			}
+			if msg != "" {
 				issues = append(issues, msg)
 			}
 		}
-		issues = append(issues, checkConditions(ctx, c, s, i)...)
+		condIssues, err := checkConditions(ctx, c, s, i)
+		if err != nil {
+			return err
+		}
+		issues = append(issues, condIssues...)
 	}
 	if len(issues) == 0 {
 		return nil
@@ -49,30 +64,34 @@ func CheckPolicy(ctx context.Context, c *Catalog, policy any) error {
 	return errors.New(strings.Join(issues, "\n"))
 }
 
-func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) string {
+// checkOne validates a single Action/NotAction string. Returns (issue, err).
+// A non-nil err is ErrUnavailable, meaning the catalog itself is unreachable
+// — CheckPolicy bubbles it up directly so the user sees one clear message
+// instead of one per failed Lookup.
+func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) (string, error) {
 	if action == "*" {
-		return "" // the all-actions wildcard — valid IAM, nothing to check
+		return "", nil // the all-actions wildcard — valid IAM, nothing to check
 	}
 	prefix, name, ok := splitAction(action)
 	if !ok {
-		return fmt.Sprintf("Statement[%d]: malformed action %q (expected \"service:action\" or \"*\")", stmtIndex, action)
+		return fmt.Sprintf("Statement[%d]: malformed action %q (expected \"service:action\" or \"*\")", stmtIndex, action), nil
 	}
 	if strings.ContainsRune(prefix, '*') || strings.ContainsRune(name, '*') {
-		return "" // wildcards: out of scope for the catalog check
+		return "", nil // wildcards: out of scope for the catalog check
 	}
 	svc, err := c.Lookup(ctx, prefix)
 	switch {
 	case errors.Is(err, ErrUnavailable):
-		return "" // graceful degrade
+		return "", err
 	case errors.Is(err, ErrUnknownService):
-		return fmt.Sprintf("Statement[%d]: unknown AWS service prefix %q in action %q", stmtIndex, prefix, action)
+		return fmt.Sprintf("Statement[%d]: unknown AWS service prefix %q in action %q", stmtIndex, prefix, action), nil
 	case err != nil:
-		return "" // unexpected — be conservative and skip
+		return "", err
 	}
 	if !svc.HasAction(name) {
-		return fmt.Sprintf("Statement[%d]: unknown action %q for service %q", stmtIndex, name, prefix)
+		return fmt.Sprintf("Statement[%d]: unknown action %q for service %q", stmtIndex, name, prefix), nil
 	}
-	return ""
+	return "", nil
 }
 
 // statements normalizes the two valid Statement shapes (single object / array
@@ -122,39 +141,43 @@ func appendStringOrList(out []string, v any) []string {
 }
 
 // checkConditions validates that every key in Statement.Condition is one the
-// statement's actions actually consume. Returns issue messages (possibly
-// empty). It's silent on cases we can't usefully constrain — the bare "*"
-// action, a wildcard service prefix, or services we couldn't reach — to avoid
-// false positives.
-func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtIdx int) []string {
+// statement's actions actually consume. Returns (issues, err). A non-nil err
+// is ErrUnavailable; CheckPolicy bubbles it up directly. Wildcard actions
+// (bare "*" or "*:Foo") yield no issues — pattern expansion is out of scope.
+func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtIdx int) ([]string, error) {
 	cond, _ := stmt["Condition"].(map[string]any)
 	if len(cond) == 0 {
-		return nil
+		return nil, nil
 	}
 	actions := actionsOf(stmt)
 	if len(actions) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	allowed := make(map[string]struct{})
 	for _, a := range actions {
 		if a == "*" {
-			return nil // can't narrow which keys are valid
+			return nil, nil // can't narrow which keys are valid
 		}
 		prefix, name, ok := splitAction(a)
 		if !ok {
 			continue // checkOne already flags malformed actions
 		}
 		if strings.ContainsRune(prefix, '*') {
-			return nil // wildcard service → can't constrain
+			return nil, nil // wildcard service → can't constrain
 		}
 		svc, err := c.Lookup(ctx, prefix)
-		if err != nil || svc == nil {
-			// If we can't resolve any action's service we can't say which
-			// keys are valid — bail on the whole condition check rather than
-			// flag keys we have no authority to judge. checkOne already
-			// reports unknown services.
-			return nil
+		switch {
+		case errors.Is(err, ErrUnavailable):
+			return nil, err
+		case errors.Is(err, ErrUnknownService):
+			// Typo'd prefix: this action contributes nothing to the allowed
+			// set, but we keep evaluating so condition keys are still
+			// validated against the actions whose services did resolve.
+			// checkOne reports the unknown prefix on its own line.
+			continue
+		case err != nil || svc == nil:
+			return nil, err
 		}
 		var keys map[string]struct{}
 		if strings.ContainsRune(name, '*') {
@@ -188,7 +211,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 				stmtIdx, key, opName))
 		}
 	}
-	return issues
+	return issues, nil
 }
 
 // splitAction parses "service:action" into its parts. Returns ok=false when

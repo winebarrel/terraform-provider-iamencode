@@ -36,7 +36,8 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"accepted on `s3:ListBucket` but rejected on `s3:GetObject`).\n\n" +
 			"Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the " +
 			"provider process; a single plan therefore makes at most one HTTP call per referenced service. " +
-			"If the reference endpoint is unreachable the catalog checks are skipped (schema validation still runs).\n\n" +
+			"If the reference endpoint is unreachable the function fails — strict mode never silently passes a policy it " +
+			"couldn't actually verify. Use `policy` instead when strict catalog validation isn't desired.\n\n" +
 			"The endpoint defaults to `https://servicereference.us-east-1.amazonaws.com` and can be overridden by setting " +
 			"the `IAMENCODE_SERVICEREF_ENDPOINT` environment variable when Terraform is run — useful for pointing at a " +
 			"corporate mirror or, in tests, a local fake.",

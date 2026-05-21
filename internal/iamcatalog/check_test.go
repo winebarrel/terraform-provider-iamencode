@@ -107,17 +107,19 @@ func TestCheckPolicy_MultipleIssuesCollected(t *testing.T) {
 	assert.Contains(t, err.Error(), "fakesvc")
 }
 
-func TestCheckPolicy_NetworkFailure_GracefulDegrade(t *testing.T) {
-	// Pointed at a port that refuses connections; CheckPolicy must not
-	// surface the network failure as a validation error.
+func TestCheckPolicy_NetworkFailure_SurfacesError(t *testing.T) {
+	// Pointed at a port that refuses connections. The whole point of
+	// policy_strict is to consult the catalog; if we can't reach it we must
+	// say so rather than silently pretend everything is fine.
 	c := New("http://127.0.0.1:1")
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{"Action": "s3:GetObject"},
-			map[string]any{"Action": "totallyfakeservice:Bar"},
 		},
 	}
-	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnavailable)
 }
 
 func TestCheckPolicy_NilCatalog_Skips(t *testing.T) {
@@ -242,10 +244,11 @@ func TestCheckPolicy_ConditionKey_GlobalAwsPrefixAllowed(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
-func TestCheckPolicy_ConditionKey_UnknownService_Skipped(t *testing.T) {
-	// Action references a service we can't resolve; checkOne reports it,
-	// checkConditions must not double-report on the keys (we don't know the
-	// keyspace for that service).
+func TestCheckPolicy_ConditionKey_UnknownService_FlagsBoth(t *testing.T) {
+	// Action references a service we can't resolve. checkOne flags the
+	// prefix; checkConditions doesn't get to add that service's keys to the
+	// allowed set, so the condition key gets flagged too. We'd rather emit
+	// two errors than silently pass on a typo'd policy.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -260,7 +263,7 @@ func TestCheckPolicy_ConditionKey_UnknownService_Skipped(t *testing.T) {
 	err := CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown AWS service prefix")
-	assert.NotContains(t, err.Error(), "condition key")
+	assert.Contains(t, err.Error(), `condition key "unknownsvc:Foo"`)
 }
 
 func TestCheckPolicy_ConditionKey_WildcardActionFallsBackToServiceKeys(t *testing.T) {
