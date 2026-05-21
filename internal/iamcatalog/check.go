@@ -264,6 +264,7 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 	}
 
 	patterns := make([]*regexp.Regexp, 0)
+	resolvedAny := false
 	for _, a := range actions {
 		if a == "*" {
 			return nil, nil
@@ -284,6 +285,7 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		case err != nil || svc == nil:
 			return nil, err
 		}
+		resolvedAny = true
 		if strings.ContainsRune(name, '*') {
 			patterns = append(patterns, svc.allArns...)
 			continue
@@ -297,6 +299,13 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			// error against an empty pattern set.
 			patterns = append(patterns, svc.allArns...)
 		}
+	}
+	if !resolvedAny {
+		// Every action was malformed or referenced an unknown service. The
+		// ARN itself may well be valid for the *intended* action; flagging
+		// it would just be a misleading second error. checkOne already
+		// reports the action-side problems.
+		return nil, nil
 	}
 
 	var issues []string

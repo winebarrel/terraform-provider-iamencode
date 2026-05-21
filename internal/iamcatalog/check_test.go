@@ -743,6 +743,44 @@ func TestCheckPolicy_Resource_ObjectKey_WithSlashes_Accepted(t *testing.T) {
 	require.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+func TestCheckPolicy_Resource_AllActionsUnresolved_SkipsCheck(t *testing.T) {
+	// Single unknown-service action with a Resource. checkOne flags the
+	// service typo; checkResources has no service catalog to consult, so
+	// flagging the ARN (which would be perfectly valid against the
+	// *intended* service) would be misleading.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "unknownsvc:Foo",
+				"Resource": "arn:aws:s3:::my-bucket",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err) // checkOne still flags the unknown service
+	assert.Contains(t, err.Error(), "unknown AWS service prefix")
+	assert.NotContains(t, err.Error(), "does not match")
+}
+
+func TestCheckPolicy_Resource_AllActionsMalformed_SkipsCheck(t *testing.T) {
+	// Malformed action (no colon) + Resource. checkOne flags the malformed
+	// action; checkResources skips so we don't double-error.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "GetObject",
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "malformed action")
+	assert.NotContains(t, err.Error(), "does not match")
+}
+
 func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 	// Typo'd action: checkOne reports it; checkResources falls back to the
 	// service-wide ARN union so a valid s3 ARN doesn't ALSO get flagged as

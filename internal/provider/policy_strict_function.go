@@ -42,7 +42,10 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"3. Every `Resource` ARN must match one of the ARN templates declared for at least one of the statement's " +
 			"actions. This catches mismatches like a bucket-only ARN (`arn:aws:s3:::my-bucket`) on `s3:GetObject` — that " +
 			"action only operates on object ARNs (`.../my-bucket/key`). The bare `*` Resource always passes; the same " +
-			"wildcard rules from check (2) apply to the action list. `NotResource` statements skip the check entirely.\n\n" +
+			"wildcard rules from check (2) apply to the action list. `NotResource` statements skip the check entirely. " +
+			"Known limitation: a handful of services use resource names that legitimately contain `/` even though their " +
+			"AWS-declared ARN templates have no literal `/` — CloudWatch Logs log-group names (`/aws/lambda/foo`) are the " +
+			"canonical case. Such ARNs will be flagged; use `Resource = \"*\"` or a wildcard in the ARN as a workaround.\n\n" +
 			"Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the " +
 			"provider process; a single plan therefore makes at most one HTTP call per referenced service. " +
 			"If the reference endpoint is unreachable the function fails — strict mode never silently passes a policy it " +
