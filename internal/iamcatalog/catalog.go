@@ -426,10 +426,11 @@ func compileARNTemplate(tmpl string, siblings []string) *regexp.Regexp {
 
 // arnPlaceholderPattern returns the regex fragment that should occupy a
 // single placeholder position in the compiled template. Most rules return
-// a bare character class ("[^:]*", "[^:/]*", ".*"), but rule 4 returns a
-// composite fragment ("[^:]*(?::[*?])*") that pairs a bounded segment with
-// an optional IAM-wildcard tail; treat the return value as an arbitrary
-// regex fragment rather than a pure character class.
+// a bare character class ("[^:]*", "[^:/]*", ".*"), but rules 3a and 4
+// return composite fragments ("[^:]*(?::[^:]+)?" and "[^:]*(?::[*?])*"
+// respectively) that pair a bounded segment with an optional tail; treat
+// the return value as an arbitrary regex fragment rather than a pure
+// character class.
 //
 // The rules, applied in order:
 //
