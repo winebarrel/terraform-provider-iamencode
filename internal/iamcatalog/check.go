@@ -15,9 +15,12 @@ import (
 //
 //  1. Action existence. Non-wildcard Action/NotAction values like "s3:GetObject"
 //     are verified against the catalog — both the service prefix and the
-//     action name must exist. Any wildcard ("*", "s3:*", "s3:Get*",
-//     "*:GetObject") is accepted without catalog lookup; we don't try to
-//     expand patterns against the catalog.
+//     action name must exist. Wildcards within the action name ("s3:Get*",
+//     "s3:G?tObject", "s3:*") are expanded against the service's action set
+//     and must match at least one real action, so plausible-looking typos
+//     like "s3:Frobni*" are still caught. The bare "*" and wildcards in the
+//     service prefix ("*:GetObject", "s*:Foo") are accepted without catalog
+//     lookup — expanding them would require fetching every service catalog.
 //
 //  2. Condition keys. Each key under Condition is checked against the union
 //     of condition keys the statement's actions consume. Keys with the

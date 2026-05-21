@@ -55,14 +55,14 @@ func TestCheckPolicy_UnknownAction(t *testing.T) {
 	assert.Contains(t, err.Error(), `unknown action "GetObjectXX" for service "s3"`)
 }
 
-func TestCheckPolicy_WildcardsSkipped(t *testing.T) {
-	// Wildcards must not trip the catalog check — without expansion logic we
-	// can't know which actions they expand to, so we treat them as valid.
+func TestCheckPolicy_BareStarAction_Skipped(t *testing.T) {
+	// The bare "*" is a universal wildcard — every IAM action across every
+	// service. We can't usefully validate it against any one service
+	// catalog, so it passes without lookup. Wildcard *names* (like "s3:*"
+	// or "s3:Get*") are now expanded — see TestCheckPolicy_WildcardName_*.
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	policy := map[string]any{
 		"Statement": []any{
-			map[string]any{"Action": "s3:*"},
-			map[string]any{"Action": "s3:Get*"},
 			map[string]any{"Action": "*"},
 		},
 	}
