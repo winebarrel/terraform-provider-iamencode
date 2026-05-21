@@ -552,6 +552,119 @@ func TestCheckPolicy_ConditionKey_OperandIsNotAMap(t *testing.T) {
 	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
 }
 
+// withStsForOIDC wires up a minimal sts service for the OIDC condition-key
+// tests below. AssumeRoleWithWebIdentity is the trigger action; TagSession
+// is a co-listed sts action that does NOT enable OIDC keys.
+func withStsForOIDC(t *testing.T) *Catalog {
+	t.Helper()
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"sts": {
+			actions: map[string][]string{
+				"AssumeRoleWithWebIdentity": {"sts:RoleSessionName"},
+				"TagSession":                nil,
+			},
+			svcConditionKeys: []string{"sts:RoleSessionName"},
+		},
+	})
+	return New(fs.server.URL)
+}
+
+func TestCheckPolicy_ConditionKey_OIDCAcceptedForWebIdentity(t *testing.T) {
+	// A user-registered OIDC provider contributes "<hostname>:<key>"
+	// condition keys that aren't in the static service reference (only
+	// AWS-preregistered providers like accounts.google.com are listed).
+	// When the statement targets AssumeRoleWithWebIdentity, accept these
+	// dynamic keys instead of flagging them as unknown.
+	c := withStsForOIDC(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": []any{"sts:AssumeRoleWithWebIdentity", "sts:TagSession"},
+				"Condition": map[string]any{
+					"StringLike": map[string]any{
+						"oidc.example.com:sub": "repo:org/proj:*",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_OIDCRejectedWithoutWebIdentity(t *testing.T) {
+	// Without an AssumeRoleWithWebIdentity action in the statement the
+	// OIDC carve-out doesn't apply — "<hostname>:<key>" remains an
+	// unknown key and is flagged. (TagSession alone is a co-listed sts
+	// action that doesn't itself drive OIDC federation.)
+	c := withStsForOIDC(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "sts:TagSession",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"oidc.example.com:sub": "repo:org/proj",
+					},
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"oidc.example.com:sub"`)
+}
+
+func TestCheckPolicy_ConditionKey_OIDCRequiresDottedHostnamePrefix(t *testing.T) {
+	// The carve-out only applies to keys whose prefix looks like a
+	// hostname (contains a '.'). A typo'd non-hostname key like
+	// "tokenhost:sub" still goes through the strict catalog check and
+	// gets flagged — otherwise the OIDC fix would mask real mistakes.
+	c := withStsForOIDC(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "sts:AssumeRoleWithWebIdentity",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"tokenhost:sub": "repo:org/proj",
+					},
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"tokenhost:sub"`)
+}
+
+func TestIsOIDCConditionKey(t *testing.T) {
+	// Direct unit test for the hostname-prefix predicate. Drives the
+	// LDH-charset, dot-required, single-colon rules.
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"oidc.example.com:sub", true},
+		{"oidc.example.com:aud", true},
+		// Multi-label hostname prefix (covers the deepest realistic case).
+		{"id.subdomain.example.org:sub", true},
+		// No dot — looks like a normal service-prefixed key.
+		{"sts:RoleSessionName", false},
+		{"saml:aud", false},
+		// Missing pieces.
+		{"oidc.example.com:", false},
+		{":sub", false},
+		{"oidc.example.com", false},
+		// Disallowed characters (slash) — clearly not a hostname prefix.
+		{"oidc/example.com:sub", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			assert.Equal(t, tc.want, isOIDCConditionKey(tc.in))
+		})
+	}
+}
+
 func TestCheckPolicy_ConditionType_OperatorMatchesKeyType(t *testing.T) {
 	c := withConditionKeys(t)
 	policy := map[string]any{

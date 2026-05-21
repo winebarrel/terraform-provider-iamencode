@@ -243,6 +243,21 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 		maps.Copy(keyTypes, svc.keyTypes)
 	}
 
+	// AssumeRoleWithWebIdentity lets a user-registered OIDC provider
+	// contribute "<provider-hostname>:<keyname>" condition keys. The
+	// provider URL isn't known statically, so the service reference
+	// only lists the AWS-preregistered providers (accounts.google.com,
+	// cognito-identity.amazonaws.com, …). If the statement targets
+	// AssumeRoleWithWebIdentity, accept any hostname-prefixed key as a
+	// dynamic OIDC provider key instead of flagging it as unknown.
+	allowsOIDCKeys := false
+	for _, a := range actions {
+		if strings.EqualFold(a, "sts:AssumeRoleWithWebIdentity") {
+			allowsOIDCKeys = true
+			break
+		}
+	}
+
 	var issues []string
 	for opName, op := range cond {
 		operands, ok := op.(map[string]any)
@@ -256,6 +271,9 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 				continue // AWS-global condition keys are always allowed
 			}
 			if _, ok := allowed[lk]; !ok {
+				if allowsOIDCKeys && isOIDCConditionKey(key) {
+					continue
+				}
 				issues = append(issues, fmt.Sprintf(
 					"Statement[%d]: condition key %q (under %s) is not valid for the statement's actions",
 					stmtIdx, key, opName))
@@ -412,6 +430,36 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		}
 	}
 	return issues, nil
+}
+
+// isOIDCConditionKey reports whether `key` has the shape of a dynamic
+// OIDC condition key — "<hostname>:<keyname>", where the hostname looks
+// like a domain (at least one '.' and only RFC-1123 LDH characters).
+//
+// The dot requirement is what separates an OIDC key from a regular
+// catalog key like "s3:GetObject" or "sts:RoleSessionName"; the latter
+// have no dot in the prefix and continue to flow through the strict
+// catalog check.
+func isOIDCConditionKey(key string) bool {
+	colon := strings.IndexByte(key, ':')
+	if colon <= 0 || colon == len(key)-1 {
+		return false
+	}
+	host := key[:colon]
+	if !strings.ContainsRune(host, '.') {
+		return false
+	}
+	for _, c := range host {
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '-', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // splitAction parses "service:action" into its parts. Returns ok=false when
