@@ -31,7 +31,10 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"[AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). " +
 			"Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the " +
 			"provider process; a single plan therefore makes at most one HTTP call per referenced service. " +
-			"If the reference endpoint is unreachable the catalog check is skipped (schema validation still runs).",
+			"If the reference endpoint is unreachable the catalog check is skipped (schema validation still runs).\n\n" +
+			"The endpoint defaults to `https://servicereference.us-east-1.amazonaws.com` and can be overridden by setting " +
+			"the `IAMENCODE_SERVICEREF_ENDPOINT` environment variable when Terraform is run — useful for pointing at a " +
+			"corporate mirror or, in tests, a local fake.",
 		Parameters: []function.Parameter{
 			function.DynamicParameter{
 				Name:                "policy",
