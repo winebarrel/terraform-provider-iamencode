@@ -27,11 +27,16 @@ func (r PolicyStrictFunction) Metadata(_ context.Context, _ function.MetadataReq
 func (r PolicyStrictFunction) Definition(_ context.Context, _ function.DefinitionRequest, resp *function.DefinitionResponse) {
 	resp.Definition = function.Definition{
 		Summary: "policy_strict function",
-		MarkdownDescription: "Like `policy`, but additionally checks every Action / NotAction against the live " +
+		MarkdownDescription: "Like `policy`, but additionally validates the policy against the live " +
 			"[AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). " +
+			"Two extra checks run on top of the JSON Schema:\n\n" +
+			"1. Every `Action` / `NotAction` must name a real service and a real action (catches typos like `s3:Frobnicate`).\n" +
+			"2. Every key inside `Condition` must be one the statement's actions actually consume. Keys with the `aws:` " +
+			"prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is " +
+			"accepted on `s3:ListBucket` but rejected on `s3:GetObject`).\n\n" +
 			"Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the " +
 			"provider process; a single plan therefore makes at most one HTTP call per referenced service. " +
-			"If the reference endpoint is unreachable the catalog check is skipped (schema validation still runs).\n\n" +
+			"If the reference endpoint is unreachable the catalog checks are skipped (schema validation still runs).\n\n" +
 			"The endpoint defaults to `https://servicereference.us-east-1.amazonaws.com` and can be overridden by setting " +
 			"the `IAMENCODE_SERVICEREF_ENDPOINT` environment variable when Terraform is run — useful for pointing at a " +
 			"corporate mirror or, in tests, a local fake.",
@@ -63,7 +68,7 @@ func (r PolicyStrictFunction) Run(ctx context.Context, req function.RunRequest, 
 		return
 	}
 
-	if err := iamcatalog.CheckActions(ctx, r.catalog, native); err != nil {
+	if err := iamcatalog.CheckPolicy(ctx, r.catalog, native); err != nil {
 		resp.Error = function.ConcatFuncErrors(resp.Error, function.NewArgumentFuncError(0, fmt.Sprintf("invalid IAM policy:\n%v", err)))
 		return
 	}

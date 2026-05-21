@@ -179,9 +179,11 @@ func TestPolicyStrictFunction_Err_MarshalFailsOnInfinity(t *testing.T) {
 	bf, _, err := big.ParseFloat("1e1000", 10, 53, big.ToNearestEven)
 	require.NoError(t, err)
 
+	// Use an aws:* key — the strict catalog accepts all aws-prefixed globals,
+	// so the condition-key check passes and we reach the json.Marshal step.
 	condInner, diags := basetypes.NewObjectValue(
-		map[string]attr.Type{"k": basetypes.NumberType{}},
-		map[string]attr.Value{"k": basetypes.NewNumberValue(bf)},
+		map[string]attr.Type{"aws:EpochTime": basetypes.NumberType{}},
+		map[string]attr.Value{"aws:EpochTime": basetypes.NewNumberValue(bf)},
 	)
 	require.False(t, diags.HasError(), diags)
 	cond, diags := basetypes.NewObjectValue(

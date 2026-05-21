@@ -46,6 +46,16 @@ var (
 type Service struct {
 	Name    string
 	actions map[string]struct{} // lowercased action names
+
+	// allKeys is the union of every condition key the service declares
+	// (service-level ConditionKeys plus every action's ActionConditionKeys).
+	// Used as the permissive fallback when the active action is a wildcard.
+	allKeys map[string]struct{} // lowercased
+
+	// keysByAction maps lowercased action name → set of allowed condition keys
+	// for that specific action. A lookup miss means "no per-action restriction
+	// known," and callers should fall back to allKeys.
+	keysByAction map[string]map[string]struct{} // both lowercased
 }
 
 // HasAction reports whether the service exposes the given action.
@@ -154,17 +164,44 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 	var raw struct {
 		Name    string `json:"Name"`
 		Actions []struct {
-			Name string `json:"Name"`
+			Name                string   `json:"Name"`
+			ActionConditionKeys []string `json:"ActionConditionKeys"`
 		} `json:"Actions"`
+		ConditionKeys []struct {
+			Name string `json:"Name"`
+		} `json:"ConditionKeys"`
 	}
 	if err := c.getJSON(ctx, url, &raw); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrUnavailable, prefix, err)
 	}
 	actions := make(map[string]struct{}, len(raw.Actions))
-	for _, a := range raw.Actions {
-		actions[strings.ToLower(a.Name)] = struct{}{}
+	keysByAction := make(map[string]map[string]struct{}, len(raw.Actions))
+	allKeys := make(map[string]struct{}, len(raw.ConditionKeys))
+	for _, ck := range raw.ConditionKeys {
+		allKeys[strings.ToLower(ck.Name)] = struct{}{}
 	}
-	return &Service{Name: raw.Name, actions: actions}, nil
+	for _, a := range raw.Actions {
+		la := strings.ToLower(a.Name)
+		actions[la] = struct{}{}
+		// Always record an entry — even an empty one. An empty set means
+		// "this action takes no service-specific condition keys" (only
+		// aws:* globals); if we skipped the empty case, the check would
+		// silently fall back to service-wide keys and let unrelated keys
+		// through.
+		set := make(map[string]struct{}, len(a.ActionConditionKeys))
+		for _, k := range a.ActionConditionKeys {
+			lk := strings.ToLower(k)
+			set[lk] = struct{}{}
+			allKeys[lk] = struct{}{} // union into service-wide fallback
+		}
+		keysByAction[la] = set
+	}
+	return &Service{
+		Name:         raw.Name,
+		actions:      actions,
+		allKeys:      allKeys,
+		keysByAction: keysByAction,
+	}, nil
 }
 
 func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {
