@@ -65,6 +65,6 @@ func (r PolicyStrictFunction) Run(ctx context.Context, req function.RunRequest, 
 		return
 	}
 
-	encoded, _ := json.Marshal(native)
+	encoded, _ := json.Marshal(native) // map[string]any with string/bool/float64/[]any: cannot fail
 	resp.Error = function.ConcatFuncErrors(resp.Error, resp.Result.Set(ctx, string(encoded)))
 }
