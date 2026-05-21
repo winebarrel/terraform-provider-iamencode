@@ -28,12 +28,12 @@ Terraform provider with user-defined functions that validate an IAM policy docum
 
 Everything `policy` catches, **and**:
 
-- **Unknown service prefix** — `s3xx:GetObject` → `unknown AWS service prefix "s3xx"`
-- **Unknown action** — `s3:Frobnicate` → `unknown action "Frobnicate" for service "s3"`
-- **Wildcard pattern that matches nothing** — `s3:Frobni*` → `action pattern "s3:Frobni*" matches no actions in service "s3"`
-- **Condition key not valid for the action** — `s3:GetObject` + `Condition: { StringEquals: { "s3:prefix": "..." } }` → `condition key "s3:prefix" (under StringEquals) is not valid for the statement's actions` (s3:prefix is meaningful for ListBucket, not GetObject)
-- **Operator type mismatch** — `StringEquals: { "s3:max-keys": "100" }` → `operator StringEquals expects a String key, but "s3:max-keys" is declared as Numeric`
-- **Resource ARN shape mismatch** — `s3:GetObject` + `Resource: "arn:aws:s3:::my-bucket"` → `resource "arn:aws:s3:::my-bucket" does not match any ARN format for the statement's actions` (object actions need `bucket/key` form)
+- **Unknown service prefix** — `s3xx:GetObject` → `Statement[0]: unknown AWS service prefix "s3xx" in action "s3xx:GetObject"`
+- **Unknown action** — `s3:Frobnicate` → `Statement[0]: unknown action "Frobnicate" for service "s3"`
+- **Wildcard pattern that matches nothing** — `s3:Frobni*` → `Statement[0]: action pattern "s3:Frobni*" matches no actions in service "s3"`
+- **Condition key not valid for the action** — `s3:GetObject` + `Condition: { StringEquals: { "s3:prefix": "..." } }` → `Statement[0]: condition key "s3:prefix" (under StringEquals) is not valid for the statement's actions` (s3:prefix is meaningful for ListBucket, not GetObject)
+- **Operator type mismatch** — `StringEquals: { "s3:max-keys": "100" }` → `Statement[0]: operator StringEquals expects a String key, but "s3:max-keys" is declared as Numeric`
+- **Resource ARN shape mismatch** — `s3:GetObject` + `Resource: "arn:aws:s3:::my-bucket"` → `Statement[0]: resource "arn:aws:s3:::my-bucket" does not match any ARN format for the statement's actions` (object actions need `bucket/key` form)
 
 ## Usage
 
@@ -42,7 +42,7 @@ terraform {
   required_providers {
     iamencode = {
       source  = "winebarrel/iamencode"
-      version = ">= 1.3.0"
+      version = ">= 1.4.0"
     }
   }
 }
