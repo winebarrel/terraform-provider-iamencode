@@ -24,6 +24,10 @@ import (
 const (
 	DefaultEndpoint = "https://servicereference.us-east-1.amazonaws.com"
 	defaultTimeout  = 3 * time.Second
+	// maxResponseBytes caps each JSON response. The largest legitimate service
+	// (ec2) is ~800 KB today; 16 MB is generous headroom while still blunting
+	// a hostile or misconfigured endpoint set via IAMENCODE_SERVICEREF_ENDPOINT.
+	maxResponseBytes = 16 << 20
 )
 
 var (
@@ -85,7 +89,13 @@ func New(endpoint string) *Catalog {
 // Lookup returns the cached service entry for prefix, fetching on first use.
 // Concurrent calls for the same prefix are coalesced via singleflight, so a
 // burst of policy validations triggers at most one HTTP request per service.
-func (c *Catalog) Lookup(ctx context.Context, prefix string) (*Service, error) {
+//
+// The caller's ctx is intentionally not threaded into the HTTP fetch: under
+// singleflight, the first caller to enter owns the in-flight request, so if
+// its ctx were canceled mid-flight every coalesced caller would see the same
+// failure AND it would be cached for the rest of the process. http.Client's
+// own Timeout bounds the work.
+func (c *Catalog) Lookup(_ context.Context, prefix string) (*Service, error) {
 	key := strings.ToLower(prefix)
 	if v, ok := c.services.Load(key); ok {
 		e := v.(serviceEntry)
@@ -96,7 +106,7 @@ func (c *Catalog) Lookup(ctx context.Context, prefix string) (*Service, error) {
 		if v, ok := c.services.Load(key); ok {
 			return v, nil
 		}
-		svc, err := c.fetchService(ctx, key)
+		svc, err := c.fetchService(context.Background(), key)
 		e := serviceEntry{svc: svc, err: err}
 		c.services.Store(key, e)
 		return e, nil
@@ -163,9 +173,10 @@ func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {
 		return err
 	}
 	defer resp.Body.Close() //nolint:errcheck
+	body := io.LimitReader(resp.Body, maxResponseBytes)
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, body)
 		return fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(body).Decode(out)
 }

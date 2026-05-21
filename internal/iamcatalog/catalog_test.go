@@ -1,6 +1,7 @@
 package iamcatalog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -209,6 +210,71 @@ func TestCatalog_New_EmptyEndpointFallsBack(t *testing.T) {
 func TestCatalog_New_TrimsTrailingSlash(t *testing.T) {
 	c := New("https://example.test/")
 	assert.Equal(t, "https://example.test", c.endpoint)
+}
+
+func TestCatalog_Lookup_CallerCancel_DoesNotPoisonCache(t *testing.T) {
+	// Under singleflight, the first caller's ctx used to be threaded into the
+	// HTTP fetch — cancel that ctx and every coalesced caller would see the
+	// failure AND it would be cached forever. The fix routes the fetch through
+	// a fresh context.Background(); this test asserts the contract by
+	// canceling the first caller mid-flight and verifying a fresh Lookup still
+	// succeeds.
+	release := make(chan struct{})
+	handlerEntered := make(chan struct{})
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"service":"s3","url":%q}]`, srv.URL+"/v1/s3/s3.json")
+	})
+	mux.HandleFunc("/v1/s3/s3.json", func(w http.ResponseWriter, _ *http.Request) {
+		close(handlerEntered)
+		<-release
+		fmt.Fprint(w, `{"Name":"s3","Actions":[{"Name":"GetObject"}]}`)
+	})
+	c := New(srv.URL)
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_, _ = c.Lookup(ctxA, "s3")
+		close(done)
+	}()
+	<-handlerEntered
+	cancelA()      // would have killed the fetch under the old code
+	close(release) // let the handler complete
+	<-done
+
+	svc, err := c.Lookup(context.Background(), "s3")
+	require.NoError(t, err)
+	assert.True(t, svc.HasAction("GetObject"))
+}
+
+func TestCatalog_Lookup_RejectsOversizedResponse(t *testing.T) {
+	// IAMENCODE_SERVICEREF_ENDPOINT is user-configurable, so the fetcher must
+	// not allow a hostile endpoint to balloon memory. io.LimitReader truncates
+	// the response at maxResponseBytes; json.Decode then fails on the
+	// incomplete payload and we surface ErrUnavailable.
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"service":"s3","url":%q}]`, srv.URL+"/v1/s3/s3.json")
+	})
+	mux.HandleFunc("/v1/s3/s3.json", func(w http.ResponseWriter, _ *http.Request) {
+		// Opens a JSON array, then floods the reader past the limit with
+		// padding that is also valid JSON whitespace — so decoding finishes
+		// (without seeing the closing bracket) with unexpected EOF.
+		_, _ = w.Write([]byte("["))
+		junk := bytes.Repeat([]byte(" "), 1<<20)
+		for range maxResponseBytes/len(junk) + 2 {
+			_, _ = w.Write(junk)
+		}
+	})
+	c := New(srv.URL)
+	_, err := c.Lookup(context.Background(), "s3")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnavailable)
 }
 
 func TestService_HasAction_NilReceiver(t *testing.T) {
