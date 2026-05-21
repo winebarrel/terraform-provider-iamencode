@@ -140,6 +140,8 @@ func TestCheckActions_MalformedAction(t *testing.T) {
 		"s3:",        // empty action
 		":GetObject", // empty prefix
 		"",           // empty string
+		"s3:*:foo",   // multiple colons — must not slip past via the wildcard branch
+		"s3:a:b",     // multiple colons, no wildcard
 	}
 	for _, a := range cases {
 		t.Run(a, func(t *testing.T) {
@@ -179,6 +181,9 @@ func TestSplitAction(t *testing.T) {
 		{":GetObject", "", "", false},
 		{"noColon", "", "", false},
 		{"", "", "", false},
+		{"s3:*:foo", "", "", false},
+		{"s3:a:b", "", "", false},
+		{"a:b:c:d", "", "", false},
 	}
 	for _, tc := range cases {
 		p, n, ok := splitAction(tc.in)

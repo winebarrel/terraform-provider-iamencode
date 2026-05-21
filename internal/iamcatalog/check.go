@@ -114,10 +114,15 @@ func appendStringOrList(out []string, v any) []string {
 }
 
 // splitAction parses "service:action" into its parts. Returns ok=false when
-// the input is not in that form (no colon, or empty halves).
+// the input has zero or multiple colons, or when either half is empty.
+// IAM action names always have exactly one colon; accepting more would let
+// strings like "s3:*:foo" slip past the strict check via the wildcard branch.
 func splitAction(a string) (prefix, name string, ok bool) {
+	if strings.Count(a, ":") != 1 {
+		return "", "", false
+	}
 	i := strings.IndexByte(a, ':')
-	if i <= 0 || i == len(a)-1 {
+	if i == 0 || i == len(a)-1 {
 		return "", "", false
 	}
 	return a[:i], a[i+1:], true
