@@ -41,6 +41,7 @@ func (p *IAMEncodeProvider) DataSources(_ context.Context) []func() datasource.D
 func (p *IAMEncodeProvider) Functions(_ context.Context) []func() function.Function {
 	return []func() function.Function{
 		NewPolicyFunction,
+		NewPolicyStrictFunction,
 	}
 }
 
