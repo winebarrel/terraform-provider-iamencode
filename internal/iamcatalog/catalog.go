@@ -55,15 +55,27 @@ type Service struct {
 	Name    string
 	actions map[string]struct{} // lowercased action names
 
-	// allKeys is the union of every condition key the service declares
-	// (service-level ConditionKeys plus every action's ActionConditionKeys).
-	// Used as the permissive fallback when the active action is a wildcard.
+	// allKeys is the union of every exact-match condition key the service
+	// declares (service-level ConditionKeys plus every action's
+	// ActionConditionKeys, lowercased). Used as the permissive fallback when
+	// the active action is a wildcard.
 	allKeys map[string]struct{} // lowercased
 
-	// keysByAction maps lowercased action name → set of allowed condition keys
-	// for that specific action. A lookup miss means "no per-action restriction
-	// known," and callers should fall back to allKeys.
+	// keysByAction maps lowercased action name → set of allowed exact-match
+	// condition keys for that specific action. A lookup miss means "no per-
+	// action restriction known," and callers should fall back to allKeys.
 	keysByAction map[string]map[string]struct{} // both lowercased
+
+	// allKeyPrefixes / keyPrefixesByAction are the placeholder-tail analogues
+	// of allKeys / keysByAction. AWS expresses keys like
+	// "kms:EncryptionContext:${EncryptionContextKey}" or
+	// "s3:ExistingObjectTag/${key}" — a fixed prefix, a ':' or '/' separator,
+	// then a placeholder. The catalog stores the lowercased prefix (with the
+	// trailing separator preserved), and the validator accepts any user-
+	// instantiated key that begins with one of those prefixes plus at least
+	// one more character. See splitPlaceholderKey for the parsing rules.
+	allKeyPrefixes      map[string]struct{}            // lowercased, trailing ':' or '/' kept
+	keyPrefixesByAction map[string]map[string]struct{} // action name → prefix set
 
 	// arnsByAction maps lowercased action name → ARN-format regexes accepted
 	// for that action. An entry is always present for every known action;
@@ -271,13 +283,14 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 	}
 	actions := make(map[string]struct{}, len(raw.Actions))
 	keysByAction := make(map[string]map[string]struct{}, len(raw.Actions))
+	keyPrefixesByAction := make(map[string]map[string]struct{}, len(raw.Actions))
 	allKeys := make(map[string]struct{}, len(raw.ConditionKeys))
+	allKeyPrefixes := make(map[string]struct{})
 	keyTypes := make(map[string]string, len(raw.ConditionKeys))
 	for _, ck := range raw.ConditionKeys {
-		lk := strings.ToLower(ck.Name)
-		allKeys[lk] = struct{}{}
+		addConditionKey(ck.Name, nil, nil, allKeys, allKeyPrefixes)
 		if len(ck.Types) > 0 {
-			keyTypes[lk] = strings.TrimPrefix(ck.Types[0], "ArrayOf")
+			keyTypes[canonicalKeyName(ck.Name)] = strings.TrimPrefix(ck.Types[0], "ArrayOf")
 		}
 	}
 
@@ -311,12 +324,12 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		}
 		lr := strings.ToLower(r.Name)
 		patternsByType[lr] = patterns
-		// Roll the top-level resource keys into the service-wide allKeys
-		// fallback too, so the wildcard-action path (s3:*) still sees them
-		// even if no concrete action references the resource.
+		// Roll the top-level resource keys into the service-wide allKeys /
+		// allKeyPrefixes fallback too, so the wildcard-action path (s3:*)
+		// still sees them even if no concrete action references the resource.
 		keysByResource[lr] = r.ConditionKeys
 		for _, k := range r.ConditionKeys {
-			allKeys[strings.ToLower(k)] = struct{}{}
+			addConditionKey(k, nil, nil, allKeys, allKeyPrefixes)
 		}
 	}
 
@@ -324,16 +337,15 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 	for _, a := range raw.Actions {
 		la := strings.ToLower(a.Name)
 		actions[la] = struct{}{}
-		// Always record an entry — even an empty one. An empty set means
+		// Always record entries — even empty ones. An empty set means
 		// "this action takes no service-specific condition keys" (only
 		// aws:* globals); if we skipped the empty case, the check would
 		// silently fall back to service-wide keys and let unrelated keys
 		// through.
 		set := make(map[string]struct{}, len(a.ActionConditionKeys))
+		prefixSet := make(map[string]struct{})
 		for _, k := range a.ActionConditionKeys {
-			lk := strings.ToLower(k)
-			set[lk] = struct{}{}
-			allKeys[lk] = struct{}{} // union into service-wide fallback
+			addConditionKey(k, set, prefixSet, allKeys, allKeyPrefixes)
 		}
 		// Many keys are valid only at the resource level. Two sources to
 		// merge in for each resource the action targets:
@@ -345,17 +357,14 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		//     entry's ConditionKeys empty. Union both so we cover both.
 		for _, r := range a.Resources {
 			for _, k := range r.ConditionKeys {
-				lk := strings.ToLower(k)
-				set[lk] = struct{}{}
-				allKeys[lk] = struct{}{}
+				addConditionKey(k, set, prefixSet, allKeys, allKeyPrefixes)
 			}
 			for _, k := range keysByResource[strings.ToLower(r.Name)] {
-				lk := strings.ToLower(k)
-				set[lk] = struct{}{}
-				allKeys[lk] = struct{}{}
+				addConditionKey(k, set, prefixSet, allKeys, allKeyPrefixes)
 			}
 		}
 		keysByAction[la] = set
+		keyPrefixesByAction[la] = prefixSet
 
 		// Same treatment for ARN patterns: always populate (possibly empty).
 		// Actions like sts:GetCallerIdentity have no Resources declaration;
@@ -368,14 +377,78 @@ func (c *Catalog) fetchService(ctx context.Context, prefix string) (*Service, er
 		arnsByAction[la] = ps
 	}
 	return &Service{
-		Name:         raw.Name,
-		actions:      actions,
-		allKeys:      allKeys,
-		keysByAction: keysByAction,
-		arnsByAction: arnsByAction,
-		allArns:      allArns,
-		keyTypes:     keyTypes,
+		Name:                raw.Name,
+		actions:             actions,
+		allKeys:             allKeys,
+		keysByAction:        keysByAction,
+		allKeyPrefixes:      allKeyPrefixes,
+		keyPrefixesByAction: keyPrefixesByAction,
+		arnsByAction:        arnsByAction,
+		allArns:             allArns,
+		keyTypes:            keyTypes,
 	}, nil
+}
+
+// splitPlaceholderKey parses an AWS-style placeholder-tail condition key
+// name into its fixed-prefix portion. AWS writes these keys as
+//
+//	kms:EncryptionContext:${EncryptionContextKey}
+//	s3:ExistingObjectTag/${key}
+//
+// — a literal prefix, a ':' or '/' separator, and a "${...}" placeholder.
+// Returns (prefix, true) for those shapes (the trailing separator is kept
+// on the prefix so HasPrefix matches a user-instantiated key cleanly), or
+// ("", false) otherwise. The separator allowlist is deliberately narrow:
+// any other character before the placeholder is treated as an exact-match
+// key so we don't accidentally swallow typo'd keys that happen to contain
+// a stray "${" sequence.
+func splitPlaceholderKey(name string) (string, bool) {
+	if !strings.HasSuffix(name, "}") {
+		return "", false
+	}
+	open := strings.LastIndex(name, "${")
+	if open <= 0 {
+		return "", false
+	}
+	sep := name[open-1]
+	if sep != ':' && sep != '/' {
+		return "", false
+	}
+	return name[:open], true
+}
+
+// canonicalKeyName returns the lookup form that addConditionKey would store
+// for `name`: the stripped lowercased prefix for placeholder-tail keys, the
+// lowercased name otherwise. Used to index sibling maps (e.g. keyTypes) so
+// they agree with whichever set addConditionKey populated.
+func canonicalKeyName(name string) string {
+	lk := strings.ToLower(name)
+	if p, ok := splitPlaceholderKey(lk); ok {
+		return p
+	}
+	return lk
+}
+
+// addConditionKey classifies a condition-key name and records it under the
+// matching set. Placeholder-tail keys (see splitPlaceholderKey) land in the
+// prefix maps; everything else lands in the exact maps. `intoExact` /
+// `intoPrefixes` accept the per-action sets — pass nil at call sites that
+// only contribute to the service-wide allKeys / allKeyPrefixes (e.g. the
+// top-level Resources[].ConditionKeys loop, where there is no specific
+// action to attribute the key to).
+func addConditionKey(name string, intoExact, intoPrefixes, allKeys, allKeyPrefixes map[string]struct{}) {
+	lk := strings.ToLower(name)
+	if p, ok := splitPlaceholderKey(lk); ok {
+		allKeyPrefixes[p] = struct{}{}
+		if intoPrefixes != nil {
+			intoPrefixes[p] = struct{}{}
+		}
+		return
+	}
+	allKeys[lk] = struct{}{}
+	if intoExact != nil {
+		intoExact[lk] = struct{}{}
+	}
 }
 
 // compileARNTemplate turns an AWS service-reference ARN format like
