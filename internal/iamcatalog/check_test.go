@@ -816,9 +816,9 @@ func TestCheckPolicy_ConditionKey_PlaceholderSlashForm_Allowed(t *testing.T) {
 	// Service-specific tag-style keys (s3:ExistingObjectTag/${key},
 	// iam:ResourceTag/${TagKey}, etc.) use '/' as the placeholder
 	// separator. They share the same prefix-pattern semantics as the colon
-	// form. (The aws:* tag keys go through the aws:* early-exit at
-	// check.go:266 and never reach the prefix path; the test deliberately
-	// uses a non-aws service to exercise it.)
+	// form. (The aws:* tag keys are short-circuited by the aws:* early-
+	// return in checkConditions and never reach the prefix path, so this
+	// test deliberately uses a non-aws service to exercise it.)
 	c := withPlaceholderKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
