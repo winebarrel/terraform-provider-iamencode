@@ -915,6 +915,60 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_NotValidForAction(t *testing.T)
 	assert.Contains(t, err.Error(), `"kms:EncryptionContext:tenant"`)
 }
 
+func TestCheckPolicy_ConditionKey_PlaceholderKey_TemplateLiteral_Rejected(t *testing.T) {
+	// A user who copy-pastes the AWS docs example verbatim ends up writing
+	// the placeholder template ("${EncryptionContextKey}") as the literal
+	// tail of the condition key. IAM doesn't expand "${...}" in condition
+	// keys, so this never matches anything at evaluation time — it's
+	// exactly the kind of typo strict mode exists to surface. The prefix
+	// path must NOT silently accept it just because the leading bytes
+	// agree with the declared prefix.
+	c := withPlaceholderKeys(t)
+	cases := []string{
+		"kms:EncryptionContext:${EncryptionContextKey}", // verbatim docs paste
+		"kms:EncryptionContext:${}",                     // empty-body template typo
+	}
+	for _, k := range cases {
+		t.Run(k, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action": "kms:Encrypt",
+						"Condition": map[string]any{
+							"StringEquals": map[string]any{k: "x"},
+						},
+					},
+				},
+			}
+			err := CheckPolicy(context.Background(), c, policy)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "condition key")
+		})
+	}
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_LiteralDollarInValue_Accepted(t *testing.T) {
+	// Sanity guard for the template-literal rejection: a user value that
+	// happens to contain "${...}" somewhere past the leading byte (e.g. as
+	// a substring inside an opaque tag value) must still be accepted. The
+	// reject rule keys on the leading "${" only, so "prefix${literal}" in
+	// the middle of a tail doesn't get caught.
+	c := withPlaceholderKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "kms:Encrypt",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"kms:EncryptionContext:tenant${literal}id": "alice",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
 func TestCheckPolicy_ConditionKey_PlaceholderKey_WildcardActionFallback(t *testing.T) {
 	// "kms:*" doesn't narrow to one action, so we accept any condition key
 	// the service declares anywhere — placeholder prefixes included.

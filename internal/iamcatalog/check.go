@@ -313,9 +313,21 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 // one character past the prefix — an empty tail like "kms:EncryptionContext:"
 // alone has no instantiated value and is still flagged as an unknown key,
 // keeping the validator strict against malformed structural shapes.
+//
+// A tail that *itself* starts with "${" is rejected too. This catches the
+// common docs-paste typo where a user copies "kms:EncryptionContext:${EncryptionContextKey}"
+// verbatim into their policy: IAM does not expand "${...}" in condition
+// keys, so the literal template would never match anything at evaluation
+// time. The leading-only check is deliberate — a tail that contains "${"
+// further in (e.g. an opaque tag value with a literal "${" substring) is
+// still accepted, since only the leading position is a clear copy-paste
+// signal.
 func matchPlaceholderPrefix(key string, prefixes map[string]struct{}) string {
 	for p := range prefixes {
 		if len(key) > len(p) && strings.HasPrefix(key, p) {
+			if strings.HasPrefix(key[len(p):], "${") {
+				continue
+			}
 			return p
 		}
 	}
