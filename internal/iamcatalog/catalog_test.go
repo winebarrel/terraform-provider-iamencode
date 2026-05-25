@@ -1,4 +1,4 @@
-package iamcatalog
+package iamcatalog_test
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/winebarrel/terraform-provider-iamencode/internal/iamcatalog"
 )
 
 // newFakeServer wires up an index plus per-service handlers that record how
@@ -198,7 +199,7 @@ func TestCatalog_Lookup_OK(t *testing.T) {
 	fs := newFakeServer(t, map[string][]string{
 		"s3": {"GetObject", "PutObject", "ListBucket"},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	svc, err := c.Lookup(context.Background(), "s3")
 	require.NoError(t, err)
 	assert.True(t, svc.HasAction("GetObject"))
@@ -208,7 +209,7 @@ func TestCatalog_Lookup_OK(t *testing.T) {
 
 func TestCatalog_Lookup_CachesResult(t *testing.T) {
 	fs := newFakeServer(t, map[string][]string{"s3": {"GetObject"}})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	for range 5 {
 		_, err := c.Lookup(context.Background(), "s3")
 		require.NoError(t, err)
@@ -219,15 +220,15 @@ func TestCatalog_Lookup_CachesResult(t *testing.T) {
 
 func TestCatalog_Lookup_UnknownServicePrefix(t *testing.T) {
 	fs := newFakeServer(t, map[string][]string{"s3": {"GetObject"}})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	_, err := c.Lookup(context.Background(), "s3xx")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnknownService)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnknownService)
 }
 
 func TestCatalog_Lookup_CaseInsensitivePrefix(t *testing.T) {
 	fs := newFakeServer(t, map[string][]string{"s3": {"GetObject"}})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	svc, err := c.Lookup(context.Background(), "S3")
 	require.NoError(t, err)
 	assert.True(t, svc.HasAction("GetObject"))
@@ -238,10 +239,10 @@ func TestCatalog_Lookup_IndexUnavailable(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	c := New(srv.URL)
+	c := iamcatalog.New(srv.URL)
 	_, err := c.Lookup(context.Background(), "s3")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
 func TestCatalog_Lookup_ServiceJSONUnavailable(t *testing.T) {
@@ -254,10 +255,10 @@ func TestCatalog_Lookup_ServiceJSONUnavailable(t *testing.T) {
 	mux.HandleFunc("/v1/s3/s3.json", func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "gone", http.StatusGone)
 	})
-	c := New(srv.URL)
+	c := iamcatalog.New(srv.URL)
 	_, err := c.Lookup(context.Background(), "s3")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
 func TestCatalog_Lookup_IndexErrorIsSticky(t *testing.T) {
@@ -270,10 +271,10 @@ func TestCatalog_Lookup_IndexErrorIsSticky(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	c := New(srv.URL)
+	c := iamcatalog.New(srv.URL)
 	for range 3 {
 		_, err := c.Lookup(context.Background(), "s3")
-		assert.ErrorIs(t, err, ErrUnavailable)
+		assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 	}
 	assert.Equal(t, int64(1), hits.Load(), "index should only be fetched once even after failure")
 }
@@ -294,7 +295,7 @@ func TestCatalog_Lookup_ConcurrentSingleflight(t *testing.T) {
 		<-release
 		fmt.Fprint(w, `{"Name":"s3","Actions":[{"Name":"GetObject"}]}`)
 	})
-	c := New(srv.URL)
+	c := iamcatalog.New(srv.URL)
 
 	const n = 20
 	var wg sync.WaitGroup
@@ -317,13 +318,13 @@ func TestCatalog_Lookup_ConcurrentSingleflight(t *testing.T) {
 }
 
 func TestCatalog_New_EmptyEndpointFallsBack(t *testing.T) {
-	c := New("")
-	assert.Equal(t, DefaultEndpoint, c.endpoint)
+	c := iamcatalog.New("")
+	assert.Equal(t, iamcatalog.DefaultEndpoint, c.Endpoint())
 }
 
 func TestCatalog_New_TrimsTrailingSlash(t *testing.T) {
-	c := New("https://example.test/")
-	assert.Equal(t, "https://example.test", c.endpoint)
+	c := iamcatalog.New("https://example.test/")
+	assert.Equal(t, "https://example.test", c.Endpoint())
 }
 
 func TestCatalog_Lookup_CallerCancel_DoesNotPoisonCache(t *testing.T) {
@@ -346,7 +347,7 @@ func TestCatalog_Lookup_CallerCancel_DoesNotPoisonCache(t *testing.T) {
 		<-release
 		fmt.Fprint(w, `{"Name":"s3","Actions":[{"Name":"GetObject"}]}`)
 	})
-	c := New(srv.URL)
+	c := iamcatalog.New(srv.URL)
 
 	ctxA, cancelA := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -381,20 +382,20 @@ func TestCatalog_Lookup_RejectsOversizedResponse(t *testing.T) {
 		// (without seeing the closing bracket) with unexpected EOF.
 		_, _ = w.Write([]byte("["))
 		junk := bytes.Repeat([]byte(" "), 1<<20)
-		for range maxResponseBytes/len(junk) + 2 {
+		for range iamcatalog.MaxResponseBytes/len(junk) + 2 {
 			_, _ = w.Write(junk)
 		}
 	})
-	c := New(srv.URL)
+	c := iamcatalog.New(srv.URL)
 	_, err := c.Lookup(context.Background(), "s3")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
 func TestService_HasAction_NilReceiver(t *testing.T) {
 	// Nil-safe so callers can blindly chain Default.Lookup() → svc.HasAction()
 	// without a separate nil check after a successful return.
-	var s *Service
+	var s *iamcatalog.Service
 	assert.False(t, s.HasAction("anything"))
 }
 
@@ -408,14 +409,14 @@ func TestCatalog_Lookup_InvalidURLInIndex(t *testing.T) {
 		// Control character in URL → http.NewRequestWithContext rejects it.
 		fmt.Fprintf(w, `[{"service":"s3","url":"http://example%c.test/"}]`, 0x01)
 	})
-	c := New(srv.URL)
+	c := iamcatalog.New(srv.URL)
 	_, err := c.Lookup(context.Background(), "s3")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
 func TestErrors_AreDistinct(t *testing.T) {
 	// Sanity: the sentinel errors must not alias each other; callers switch
 	// on them to decide between "fail" and "skip".
-	assert.False(t, errors.Is(ErrUnknownService, ErrUnavailable))
+	assert.False(t, errors.Is(iamcatalog.ErrUnknownService, iamcatalog.ErrUnavailable))
 }

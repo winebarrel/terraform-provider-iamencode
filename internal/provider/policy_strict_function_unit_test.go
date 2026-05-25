@@ -1,4 +1,4 @@
-package provider
+package provider_test
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/winebarrel/terraform-provider-iamencode/internal/iamcatalog"
+	iamencodeprovider "github.com/winebarrel/terraform-provider-iamencode/internal/provider"
 )
 
 // fakeCatalog returns a Catalog backed by an httptest server with the given
@@ -59,7 +60,7 @@ func runStrict(t *testing.T, cat *iamcatalog.Catalog, policy attr.Value) *functi
 		basetypes.NewDynamicValue(policy),
 	})}
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
-	PolicyStrictFunction{catalog: cat}.Run(context.Background(), req, resp)
+	iamencodeprovider.NewPolicyStrictFunctionForTest(cat).Run(context.Background(), req, resp)
 	return resp
 }
 
@@ -160,7 +161,7 @@ func TestPolicyStrictFunction_Err_NoArguments(t *testing.T) {
 	cat := fakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	req := function.RunRequest{Arguments: function.NewArgumentsData(nil)}
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
-	PolicyStrictFunction{catalog: cat}.Run(context.Background(), req, resp)
+	iamencodeprovider.NewPolicyStrictFunctionForTest(cat).Run(context.Background(), req, resp)
 	assert.NotNil(t, resp.Error)
 }
 
@@ -169,7 +170,7 @@ func TestPolicyStrictFunction_Err_UnsupportedValue(t *testing.T) {
 	dyn := basetypes.NewDynamicValue(fakeAttrValue{})
 	req := function.RunRequest{Arguments: function.NewArgumentsData([]attr.Value{dyn})}
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
-	PolicyStrictFunction{catalog: cat}.Run(context.Background(), req, resp)
+	iamencodeprovider.NewPolicyStrictFunctionForTest(cat).Run(context.Background(), req, resp)
 	require.NotNil(t, resp.Error)
 	assert.Contains(t, resp.Error.Error(), "unsupported terraform value type")
 }
@@ -223,7 +224,7 @@ func TestPolicyStrictFunction_Err_MarshalFailsOnInfinity(t *testing.T) {
 }
 
 func TestPolicyStrictFunction_MetadataAndDefinition(t *testing.T) {
-	f := PolicyStrictFunction{}
+	f := iamencodeprovider.PolicyStrictFunction{}
 	var meta function.MetadataResponse
 	f.Metadata(context.Background(), function.MetadataRequest{}, &meta)
 	assert.Equal(t, "policy_strict", meta.Name)

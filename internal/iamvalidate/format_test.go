@@ -1,4 +1,4 @@
-package iamvalidate
+package iamvalidate_test
 
 import (
 	"encoding/json"
@@ -11,6 +11,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/winebarrel/terraform-provider-iamencode/internal/iamvalidate"
 )
 
 func TestValidate_InvalidEffect_Snippet(t *testing.T) {
@@ -24,7 +25,7 @@ func TestValidate_InvalidEffect_Snippet(t *testing.T) {
 			},
 		},
 	}
-	err := Validate(policy)
+	err := iamvalidate.Validate(policy)
 	require.Error(t, err)
 
 	out := err.Error()
@@ -47,7 +48,7 @@ func TestValidate_MissingVersion(t *testing.T) {
 			map[string]any{"Effect": "Allow", "Action": "s3:*", "Resource": "*"},
 		},
 	}
-	err := Validate(policy)
+	err := iamvalidate.Validate(policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `(root): missing required property "Version"`)
 }
@@ -61,7 +62,7 @@ func TestValidate_MissingRequired_PointsAtObject_AllLinesMarked(t *testing.T) {
 			},
 		},
 	}
-	err := Validate(policy)
+	err := iamvalidate.Validate(policy)
 	require.Error(t, err)
 
 	out := err.Error()
@@ -93,7 +94,7 @@ func TestValidate_CaretAlignedWithValue(t *testing.T) {
 			},
 		},
 	}
-	out := Validate(policy).Error()
+	out := iamvalidate.Validate(policy).Error()
 
 	lines := strings.Split(out, "\n")
 	contentIdx, caretIdx := -1, -1
@@ -149,7 +150,7 @@ func TestSnippet_PipeAlignsAcrossDocumentSizes(t *testing.T) {
 				"Action":   "s3:*",
 				"Resource": "*",
 			}
-			out := Validate(map[string]any{"Statement": stmts}).Error()
+			out := iamvalidate.Validate(map[string]any{"Statement": stmts}).Error()
 
 			var content, caret string
 			for line := range strings.SplitSeq(out, "\n") {
@@ -189,7 +190,7 @@ func TestValidate_StringWithEmbeddedNewline_StillSingleLineInSnippet(t *testing.
 			},
 		},
 	}
-	err := Validate(policy)
+	err := iamvalidate.Validate(policy)
 	require.Error(t, err)
 
 	out := err.Error()
@@ -217,7 +218,7 @@ func TestValidate_ConditionValue_Caret(t *testing.T) {
 			},
 		},
 	}
-	err := Validate(policy)
+	err := iamvalidate.Validate(policy)
 	require.Error(t, err)
 
 	out := err.Error()
@@ -245,7 +246,7 @@ func TestValidate_BadConditionOperator_PropertyNamesPath(t *testing.T) {
 			},
 		},
 	}
-	out := Validate(policy).Error()
+	out := iamvalidate.Validate(policy).Error()
 
 	assert.Contains(t, out, `Statement[0].Condition.StringEqualsx: invalid property name "StringEqualsx"`)
 	assert.Contains(t, out, `did you mean "StringEquals"?`)
@@ -265,7 +266,7 @@ func TestFormatEnumMessage_TruncatesLongEnum(t *testing.T) {
 	for i := range want {
 		want[i] = fmt.Sprintf("opt%02d", i)
 	}
-	msg := formatEnumMessage(&kind.Enum{Got: "opt03x", Want: want})
+	msg := iamvalidate.FormatEnumMessage(&kind.Enum{Got: "opt03x", Want: want})
 	assert.Contains(t, msg, "and 22 more")    // 30 - 8 displayed
 	assert.Contains(t, msg, `(got "opt03x")`) // got value preserved
 	assert.Contains(t, msg, `did you mean "opt03"?`)
@@ -275,15 +276,15 @@ func TestClosestEnumString_RejectsFarMatches(t *testing.T) {
 	// Wildly different inputs should produce no suggestion (avoids confusing
 	// hints like "did you mean 'Null'?" for arbitrary strings).
 	want := []any{"StringEquals", "NumericEquals", "Bool"}
-	assert.Equal(t, "", closestEnumString("xxxxxxxxxx", want))
+	assert.Equal(t, "", iamvalidate.ClosestEnumString("xxxxxxxxxx", want))
 }
 
 func TestClosestEnumString_EmptyAndNonStringWant(t *testing.T) {
 	// Empty want list -> no candidate -> "".
-	assert.Equal(t, "", closestEnumString("foo", nil))
+	assert.Equal(t, "", iamvalidate.ClosestEnumString("foo", nil))
 	// Non-string entries in want are skipped via the continue branch. With
 	// only non-strings present we still return "".
-	assert.Equal(t, "", closestEnumString("foo", []any{1, true, nil}))
+	assert.Equal(t, "", iamvalidate.ClosestEnumString("foo", []any{1, true, nil}))
 }
 
 func TestDidYouMean_NoEnumCause(t *testing.T) {
@@ -296,8 +297,8 @@ func TestDidYouMean_NoEnumCause(t *testing.T) {
 			{ErrorKind: &kind.Type{Got: "number", Want: []string{"string"}}},
 		},
 	}
-	assert.Equal(t, "", didYouMean("x", e))
-	assert.Nil(t, findEnumCause(e))
+	assert.Equal(t, "", iamvalidate.DidYouMean("x", e))
+	assert.Nil(t, iamvalidate.FindEnumCause(e))
 }
 
 func TestLevenshtein(t *testing.T) {
@@ -311,7 +312,7 @@ func TestLevenshtein(t *testing.T) {
 		{"abc", "abc", 0},
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, levenshtein(c.a, c.b), "levenshtein(%q,%q)", c.a, c.b)
+		assert.Equal(t, c.want, iamvalidate.Levenshtein(c.a, c.b), "levenshtein(%q,%q)", c.a, c.b)
 	}
 }
 
@@ -327,7 +328,7 @@ func TestFormatPath(t *testing.T) {
 		{[]string{"Condition", "StringEquals", "s3:prefix", "0"}, "Condition.StringEquals.s3:prefix[0]"},
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, formatPath(c.in), "path: %v", c.in)
+		assert.Equal(t, c.want, iamvalidate.FormatPath(c.in), "path: %v", c.in)
 	}
 }
 
@@ -342,7 +343,7 @@ func TestIsArrayIndex(t *testing.T) {
 		"0.5": false,
 	}
 	for in, want := range cases {
-		assert.Equal(t, want, isArrayIndex(in), "input: %q", in)
+		assert.Equal(t, want, iamvalidate.IsArrayIndex(in), "input: %q", in)
 	}
 }
 
@@ -374,7 +375,7 @@ func TestKindMessage_AllBranches(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			assert.Equal(t, c.want, kindMessage(c.kind))
+			assert.Equal(t, c.want, iamvalidate.KindMessage(c.kind))
 		})
 	}
 }
@@ -393,7 +394,7 @@ func TestValueString(t *testing.T) {
 		{[]int{1, 2}, "[1 2]"}, // default branch
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, valueString(c.in))
+		assert.Equal(t, c.want, iamvalidate.ValueString(c.in))
 	}
 }
 
@@ -403,13 +404,13 @@ func TestIsGrouping(t *testing.T) {
 		&kind.Schema{}, &kind.Reference{}, &kind.Not{},
 	}
 	for _, k := range groupings {
-		assert.True(t, isGrouping(k), "expected grouping: %T", k)
+		assert.True(t, iamvalidate.IsGrouping(k), "expected grouping: %T", k)
 	}
 	leaves := []jsonschema.ErrorKind{
 		&kind.Type{}, &kind.Enum{}, &kind.Required{}, &kind.Pattern{},
 	}
 	for _, k := range leaves {
-		assert.False(t, isGrouping(k), "expected non-grouping: %T", k)
+		assert.False(t, iamvalidate.IsGrouping(k), "expected non-grouping: %T", k)
 	}
 }
 
@@ -422,33 +423,34 @@ func TestRenderJSON_LocatesNestedPath(t *testing.T) {
 			},
 		},
 	}
-	r := renderJSON(v)
+	r := iamvalidate.RenderJSON(v)
 
-	loc, ok := r.locs[pathKey([]string{"Statement", "0", "Effect"})]
+	line, endLine, width, ok := r.LocAt(iamvalidate.PathKey([]string{"Statement", "0", "Effect"}))
 	require.True(t, ok)
-	assert.Equal(t, loc.line, loc.endLine, "single-line value")
-	assert.Equal(t, 8, loc.width, `"Allowx" is 8 chars including quotes`)
+	assert.Equal(t, line, endLine, "single-line value")
+	assert.Equal(t, 8, width, `"Allowx" is 8 chars including quotes`)
 
-	require.Less(t, loc.line, len(r.lines)+1)
-	assert.Contains(t, r.lines[loc.line-1], `"Effect": "Allowx"`)
+	lines := r.Lines()
+	require.Less(t, line, len(lines)+1)
+	assert.Contains(t, lines[line-1], `"Effect": "Allowx"`)
 }
 
 func TestRenderJSON_EmptyContainers(t *testing.T) {
-	r := renderJSON(map[string]any{
+	r := iamvalidate.RenderJSON(map[string]any{
 		"obj": map[string]any{},
 		"arr": []any{},
 	})
-	out := strings.Join(r.lines, "\n")
+	out := strings.Join(r.Lines(), "\n")
 	assert.Contains(t, out, `"obj": {}`)
 	assert.Contains(t, out, `"arr": []`)
 }
 
 func TestRenderJSON_MultiElementArray(t *testing.T) {
 	// Exercises the comma branch in writeArray.
-	r := renderJSON(map[string]any{
+	r := iamvalidate.RenderJSON(map[string]any{
 		"items": []any{"a", "b", "c"},
 	})
-	out := strings.Join(r.lines, "\n")
+	out := strings.Join(r.Lines(), "\n")
 	assert.Contains(t, out, `"a",`)
 	assert.Contains(t, out, `"b",`)
 	assert.Contains(t, out, `"c"`)
@@ -463,8 +465,8 @@ func TestRenderJSON_AllPrimitiveTypes(t *testing.T) {
 		"z":   nil,
 		"odd": []int{1, 2}, // hits the default branch via json.Marshal
 	}
-	r := renderJSON(v)
-	out := strings.Join(r.lines, "\n")
+	r := iamvalidate.RenderJSON(v)
+	out := strings.Join(r.Lines(), "\n")
 	assert.Contains(t, out, `"s": "x"`)
 	assert.Contains(t, out, `"b": true`)
 	assert.Contains(t, out, `"n": 1.5`)
@@ -474,8 +476,8 @@ func TestRenderJSON_AllPrimitiveTypes(t *testing.T) {
 }
 
 func TestSnippet_UnknownPath_ReturnsEmpty(t *testing.T) {
-	r := renderJSON(map[string]any{"Statement": []any{}})
-	assert.Empty(t, r.snippet([]string{"DoesNotExist"}, false))
+	r := iamvalidate.RenderJSON(map[string]any{"Statement": []any{}})
+	assert.Empty(t, r.Snippet([]string{"DoesNotExist"}, false))
 }
 
 func TestFormatError_DedupesIdenticalLeaves(t *testing.T) {
@@ -490,7 +492,7 @@ func TestFormatError_DedupesIdenticalLeaves(t *testing.T) {
 		ErrorKind:        &kind.OneOf{},
 		Causes:           []*jsonschema.ValidationError{leaf, leaf},
 	}
-	out := formatError(map[string]any{"x": 1.0}, root)
+	out := iamvalidate.FormatError(map[string]any{"x": 1.0}, root)
 	occurrences := strings.Count(out, "got number, want string")
 	assert.Equal(t, 1, occurrences, "duplicate leaves should be collapsed")
 }
@@ -501,6 +503,6 @@ func TestFormatError_RootPath(t *testing.T) {
 		InstanceLocation: nil,
 		ErrorKind:        &kind.Required{Missing: []string{"Statement"}},
 	}
-	out := formatError(map[string]any{}, root)
+	out := iamvalidate.FormatError(map[string]any{}, root)
 	assert.Contains(t, out, `(root): missing required property "Statement"`)
 }

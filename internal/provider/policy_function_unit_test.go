@@ -1,4 +1,4 @@
-package provider
+package provider_test
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	iamencodeprovider "github.com/winebarrel/terraform-provider-iamencode/internal/provider"
 )
 
 // fakeAttrValue is an attr.Value that doesn't match any case in
@@ -80,7 +81,7 @@ func TestAttrValueToNative(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := attrValueToNative(c.in)
+			got, err := iamencodeprovider.AttrValueToNative(c.in)
 			if c.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, got)
@@ -94,7 +95,7 @@ func TestAttrValueToNative(t *testing.T) {
 
 // Errors from nested elements must propagate up through elementsToNative.
 func TestElementsToNative_ErrorPropagates(t *testing.T) {
-	got, err := elementsToNative([]attr.Value{
+	got, err := iamencodeprovider.ElementsToNative([]attr.Value{
 		basetypes.NewStringValue("ok"),
 		fakeAttrValue{},
 	})
@@ -104,7 +105,7 @@ func TestElementsToNative_ErrorPropagates(t *testing.T) {
 
 // Errors from nested attributes must propagate up through attributesToNative.
 func TestAttributesToNative_ErrorPropagates(t *testing.T) {
-	got, err := attributesToNative(map[string]attr.Value{
+	got, err := iamencodeprovider.AttributesToNative(map[string]attr.Value{
 		"bad": fakeAttrValue{},
 	})
 	assert.Error(t, err)
@@ -115,7 +116,7 @@ func TestRun_NoArguments(t *testing.T) {
 	// No arguments triggers the defensive guard after req.Arguments.Get.
 	req := function.RunRequest{Arguments: function.NewArgumentsData(nil)}
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
-	PolicyFunction{}.Run(context.Background(), req, resp)
+	iamencodeprovider.PolicyFunction{}.Run(context.Background(), req, resp)
 	assert.NotNil(t, resp.Error)
 }
 
@@ -165,7 +166,7 @@ func TestRun_MarshalFailsOnInfinityNumber(t *testing.T) {
 
 	req := function.RunRequest{Arguments: function.NewArgumentsData([]attr.Value{basetypes.NewDynamicValue(policy)})}
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
-	PolicyFunction{}.Run(context.Background(), req, resp)
+	iamencodeprovider.PolicyFunction{}.Run(context.Background(), req, resp)
 	require.NotNil(t, resp.Error)
 	assert.Contains(t, resp.Error.Error(), "encode IAM policy")
 }
@@ -180,7 +181,7 @@ func TestRun_UnsupportedValue(t *testing.T) {
 	dyn := basetypes.NewDynamicValue(fakeAttrValue{})
 	req := function.RunRequest{Arguments: function.NewArgumentsData([]attr.Value{dyn})}
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
-	PolicyFunction{}.Run(context.Background(), req, resp)
+	iamencodeprovider.PolicyFunction{}.Run(context.Background(), req, resp)
 	require.NotNil(t, resp.Error)
 	assert.Contains(t, resp.Error.Error(), "unsupported terraform value type")
 }

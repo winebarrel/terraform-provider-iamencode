@@ -1,4 +1,4 @@
-package iamcatalog
+package iamcatalog_test
 
 import (
 	"regexp"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/winebarrel/terraform-provider-iamencode/internal/iamcatalog"
 )
 
 func TestIamWildcardToRegex(t *testing.T) {
@@ -23,7 +24,7 @@ func TestIamWildcardToRegex(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			assert.Equal(t, tc.want, iamWildcardToRegex(tc.in))
+			assert.Equal(t, tc.want, iamcatalog.IamWildcardToRegex(tc.in))
 		})
 	}
 }
@@ -34,8 +35,8 @@ func TestRegexIntersects_MalformedFailsClosed(t *testing.T) {
 	// if compilation fails — it should never happen in normal flow, since
 	// both sides come from us, but the package-private helper guards
 	// against it and the defensive return is worth covering.
-	assert.False(t, regexIntersects("[unterminated", "^a$"))
-	assert.False(t, regexIntersects("^a$", "[unterminated"))
+	assert.False(t, iamcatalog.RegexIntersects("[unterminated", "^a$"))
+	assert.False(t, iamcatalog.RegexIntersects("^a$", "[unterminated"))
 }
 
 func TestAcceptedRanges(t *testing.T) {
@@ -56,7 +57,7 @@ func TestAcceptedRanges(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := acceptedRanges(syntax.Inst{Op: tc.op, Rune: tc.runes})
+			got := iamcatalog.AcceptedRanges(syntax.Inst{Op: tc.op, Rune: tc.runes})
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -69,8 +70,8 @@ func TestMatchesARN_OverlongValueFailsClosed(t *testing.T) {
 	// requires a ":sub:" literal that the value lacks, so strict match
 	// fails and we'd otherwise enter the BFS fallback.
 	tmpl := regexp.MustCompile(`^arn:[^:]*:svc:[^:]*:[^:]*:group:[^:]*:sub:.*$`)
-	value := "arn:aws:svc:r:a:group:" + strings.Repeat("*", maxResourceLen+1)
-	assert.False(t, matchesARN(tmpl, value))
+	value := "arn:aws:svc:r:a:group:" + strings.Repeat("*", iamcatalog.MaxResourceLen+1)
+	assert.False(t, iamcatalog.MatchesARN(tmpl, value))
 }
 
 func TestRegexIntersects(t *testing.T) {
@@ -134,7 +135,7 @@ func TestRegexIntersects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, regexIntersects(tc.a, tc.b))
+			assert.Equal(t, tc.want, iamcatalog.RegexIntersects(tc.a, tc.b))
 		})
 	}
 }
