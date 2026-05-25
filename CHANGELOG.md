@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.5.0] - 2026-05-25
+
+- `policy_strict`: accept condition keys whose AWS-declared form ends in a placeholder, e.g. `kms:EncryptionContext:aws:s3:arn` against `kms:EncryptionContext:${EncryptionContextKey}`. Exact-match lookups previously flagged these as unknown.
+- `policy_strict`: reject the docs-template literal itself (e.g. `kms:EncryptionContext:${EncryptionContextKey}`) as a condition key. IAM does not expand `${...}` in condition keys, so a verbatim copy-paste from AWS docs never matches at evaluation time.
+
 ## [1.4.0] - 2026-05-21
 
 - Added `provider::iamencode::policy_strict(...)`. Runs the same schema validation as `policy`, plus semantic checks against the live [AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). Catches unknown service prefixes, unknown actions, wildcard patterns that match nothing, condition keys that aren't valid for the statement's actions, condition operator vs key-type mismatches, and Resource ARN shapes that don't match the action.
