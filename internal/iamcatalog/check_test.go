@@ -1,4 +1,4 @@
-package iamcatalog
+package iamcatalog_test
 
 import (
 	"context"
@@ -6,14 +6,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/winebarrel/terraform-provider-iamencode/internal/iamcatalog"
 )
 
 // newFakeCatalog builds a Catalog backed by a per-test httptest server, so each
 // test owns its own instance and there's no shared mutable state to race over.
-func newFakeCatalog(t *testing.T, services map[string][]string) *Catalog {
+func newFakeCatalog(t *testing.T, services map[string][]string) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServer(t, services)
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_AllValid(t *testing.T) {
@@ -27,7 +29,7 @@ func TestCheckPolicy_AllValid(t *testing.T) {
 			map[string]any{"Action": []any{"s3:PutObject", "iam:GetRole"}},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_UnknownService(t *testing.T) {
@@ -37,7 +39,7 @@ func TestCheckPolicy_UnknownService(t *testing.T) {
 			map[string]any{"Action": "s3xx:GetObject"},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown AWS service prefix "s3xx"`)
 	assert.Contains(t, err.Error(), "Statement[0]")
@@ -50,7 +52,7 @@ func TestCheckPolicy_UnknownAction(t *testing.T) {
 			map[string]any{"Action": "s3:GetObjectXX"},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown action "GetObjectXX" for service "s3"`)
 }
@@ -66,7 +68,7 @@ func TestCheckPolicy_BareStarAction_Skipped(t *testing.T) {
 			map[string]any{"Action": "*"},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_WildcardName_MatchesRealAction(t *testing.T) {
@@ -78,7 +80,7 @@ func TestCheckPolicy_WildcardName_MatchesRealAction(t *testing.T) {
 			map[string]any{"Action": "s3:Get*"},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_WildcardName_NoMatch_Flagged(t *testing.T) {
@@ -90,7 +92,7 @@ func TestCheckPolicy_WildcardName_NoMatch_Flagged(t *testing.T) {
 			map[string]any{"Action": "s3:Frobni*"},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `action pattern "s3:Frobni*" matches no actions in service "s3"`)
 }
@@ -103,7 +105,7 @@ func TestCheckPolicy_WildcardName_SingleCharMatcher(t *testing.T) {
 			map[string]any{"Action": "s3:G?tObject"},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_WildcardName_BareStar(t *testing.T) {
@@ -115,7 +117,7 @@ func TestCheckPolicy_WildcardName_BareStar(t *testing.T) {
 			map[string]any{"Action": "s3:*"},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_WildcardName_EmptyService_Flagged(t *testing.T) {
@@ -128,7 +130,7 @@ func TestCheckPolicy_WildcardName_EmptyService_Flagged(t *testing.T) {
 			map[string]any{"Action": "s3:Get*"},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "matches no actions")
 }
@@ -145,7 +147,7 @@ func TestCheckPolicy_WildcardServicePrefix_StillSkipped(t *testing.T) {
 					map[string]any{"Action": a},
 				},
 			}
-			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+			require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 		})
 	}
 }
@@ -157,7 +159,7 @@ func TestCheckPolicy_NotActionChecked(t *testing.T) {
 			map[string]any{"NotAction": "s3:Frobnicate"},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Frobnicate")
 }
@@ -167,7 +169,7 @@ func TestCheckPolicy_StatementAsObject(t *testing.T) {
 	policy := map[string]any{
 		"Statement": map[string]any{"Action": "s3:Frobnicate"},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Frobnicate")
 }
@@ -180,7 +182,7 @@ func TestCheckPolicy_MultipleIssuesCollected(t *testing.T) {
 			map[string]any{"Action": "fakesvc:Foo"},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	// Both issues must appear; the user wants to fix everything in one pass,
 	// not whack-a-mole through repeated terraform plan invocations.
@@ -192,15 +194,15 @@ func TestCheckPolicy_NetworkFailure_SurfacesError(t *testing.T) {
 	// Pointed at a port that refuses connections. The whole point of
 	// policy_strict is to consult the catalog; if we can't reach it we must
 	// say so rather than silently pretend everything is fine.
-	c := New("http://127.0.0.1:1")
+	c := iamcatalog.New("http://127.0.0.1:1")
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{"Action": "s3:GetObject"},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
 func TestCheckPolicy_NilCatalog_Skips(t *testing.T) {
@@ -211,7 +213,7 @@ func TestCheckPolicy_NilCatalog_Skips(t *testing.T) {
 			map[string]any{"Action": "totallyfake:Action"},
 		},
 	}
-	assert.NoError(t, CheckPolicy(context.Background(), nil, policy))
+	assert.NoError(t, iamcatalog.CheckPolicy(context.Background(), nil, policy))
 }
 
 func TestCheckPolicy_MalformedAction(t *testing.T) {
@@ -229,7 +231,7 @@ func TestCheckPolicy_MalformedAction(t *testing.T) {
 	for _, a := range cases {
 		t.Run(a, func(t *testing.T) {
 			policy := map[string]any{"Statement": []any{map[string]any{"Action": a}}}
-			err := CheckPolicy(context.Background(), c, policy)
+			err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 			require.Error(t, err, "malformed action %q should fail strict validation", a)
 			assert.Contains(t, err.Error(), "malformed action")
 		})
@@ -240,15 +242,15 @@ func TestCheckPolicy_NotAPolicyShape(t *testing.T) {
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	// Defensive: schema validation should reject these upstream, but the
 	// helper must not panic if called with garbage.
-	require.NoError(t, CheckPolicy(context.Background(), c, nil))
-	require.NoError(t, CheckPolicy(context.Background(), c, "not a map"))
-	require.NoError(t, CheckPolicy(context.Background(), c, map[string]any{"Statement": 42}))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, nil))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, "not a map"))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, map[string]any{"Statement": 42}))
 }
 
 // withConditionKeys wires up a catalog where s3 has ListBucket (with the
 // usual prefix/max-keys keys) and GetObject (with none). Used by the
 // condition-key tests below.
-func withConditionKeys(t *testing.T) *Catalog {
+func withConditionKeys(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"s3": {
@@ -263,7 +265,7 @@ func withConditionKeys(t *testing.T) *Catalog {
 			},
 		},
 	})
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_ConditionKey_Valid(t *testing.T) {
@@ -278,7 +280,7 @@ func TestCheckPolicy_ConditionKey_Valid(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_NotValidForAction(t *testing.T) {
@@ -295,7 +297,7 @@ func TestCheckPolicy_ConditionKey_NotValidForAction(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `condition key "s3:prefix"`)
 	assert.Contains(t, err.Error(), "StringEquals")
@@ -318,7 +320,7 @@ func TestCheckPolicy_ConditionKey_GlobalAwsPrefixAllowed(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_UnknownService_FlagsBoth(t *testing.T) {
@@ -337,7 +339,7 @@ func TestCheckPolicy_ConditionKey_UnknownService_FlagsBoth(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown AWS service prefix")
 	assert.Contains(t, err.Error(), `condition key "unknownsvc:Foo"`)
@@ -357,7 +359,7 @@ func TestCheckPolicy_ConditionKey_WildcardActionFallsBackToServiceKeys(t *testin
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_BareStarActionSkipsCheck(t *testing.T) {
@@ -374,7 +376,7 @@ func TestCheckPolicy_ConditionKey_BareStarActionSkipsCheck(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_NetworkFailure_FromCheckConditionsPath(t *testing.T) {
@@ -382,7 +384,7 @@ func TestCheckPolicy_ConditionKey_NetworkFailure_FromCheckConditionsPath(t *test
 	// catalog is consulted for this prefix is inside checkConditions. If
 	// the catalog is unreachable that error must propagate out of
 	// CheckPolicy — exercising the err branch in checkConditions itself.
-	c := New("http://127.0.0.1:1")
+	c := iamcatalog.New("http://127.0.0.1:1")
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -393,9 +395,9 @@ func TestCheckPolicy_ConditionKey_NetworkFailure_FromCheckConditionsPath(t *test
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
 func TestCheckPolicy_ConditionKey_UnknownActionFallsBackToServiceKeys(t *testing.T) {
@@ -413,7 +415,7 @@ func TestCheckPolicy_ConditionKey_UnknownActionFallsBackToServiceKeys(t *testing
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown action "NotARealAction"`)
 	assert.NotContains(t, err.Error(), "condition key")
@@ -437,12 +439,12 @@ func TestCheckPolicy_ConditionKey_NotActionStatement_SkipsConditionCheck(t *test
 		},
 	}
 	// Real NotAction entries that exist must still pass.
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 
 	// And a typo in NotAction is still caught by checkOne even though
 	// checkConditions skipped.
 	policy["Statement"].([]any)[0].(map[string]any)["NotAction"] = "s3:GetObjectx"
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown action "GetObjectx"`)
 	assert.NotContains(t, err.Error(), "condition key", "NotAction must not drive the condition-key keyspace")
@@ -462,7 +464,7 @@ func TestCheckPolicy_ConditionKey_MultipleServices_UnionsKeys(t *testing.T) {
 			svcConditionKeys: []string{"lambda:FunctionUrlAuthType"},
 		},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -477,13 +479,13 @@ func TestCheckPolicy_ConditionKey_MultipleServices_UnionsKeys(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 
 	// Same actions, but one key belongs to neither service — flagged.
 	policy["Statement"].([]any)[0].(map[string]any)["Condition"] = map[string]any{
 		"StringEquals": map[string]any{"iam:PassedToService": "lambda.amazonaws.com"},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "iam:PassedToService")
 }
@@ -502,7 +504,7 @@ func TestCheckPolicy_ConditionKey_MultipleActions_UnionsKeys(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_WildcardServicePrefixSkipsCheck(t *testing.T) {
@@ -520,7 +522,7 @@ func TestCheckPolicy_ConditionKey_WildcardServicePrefixSkipsCheck(t *testing.T) 
 			},
 		},
 	}
-	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
+	assert.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_NoActionsOnStatement(t *testing.T) {
@@ -534,7 +536,7 @@ func TestCheckPolicy_ConditionKey_NoActionsOnStatement(t *testing.T) {
 			},
 		},
 	}
-	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
+	assert.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_OperandIsNotAMap(t *testing.T) {
@@ -549,7 +551,7 @@ func TestCheckPolicy_ConditionKey_OperandIsNotAMap(t *testing.T) {
 			},
 		},
 	}
-	assert.NoError(t, CheckPolicy(context.Background(), c, policy))
+	assert.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 // withStsForOIDC wires up a minimal sts service for the OIDC condition-key
@@ -557,7 +559,7 @@ func TestCheckPolicy_ConditionKey_OperandIsNotAMap(t *testing.T) {
 // is a co-listed sts action that does NOT enable OIDC keys. lambda is
 // added so the "wildcard from an unrelated service must not trigger the
 // carve-out" case can exercise a real wildcard expansion.
-func withStsForOIDC(t *testing.T) *Catalog {
+func withStsForOIDC(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"sts": {
@@ -573,7 +575,7 @@ func withStsForOIDC(t *testing.T) *Catalog {
 			},
 		},
 	})
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_ConditionKey_OIDCAcceptedForWebIdentity(t *testing.T) {
@@ -595,7 +597,7 @@ func TestCheckPolicy_ConditionKey_OIDCAcceptedForWebIdentity(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_OIDCRejectedWithoutWebIdentity(t *testing.T) {
@@ -616,7 +618,7 @@ func TestCheckPolicy_ConditionKey_OIDCRejectedWithoutWebIdentity(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"oidc.example.com:sub"`)
 }
@@ -639,7 +641,7 @@ func TestCheckPolicy_ConditionKey_OIDCRequiresDottedHostnamePrefix(t *testing.T)
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"tokenhost:sub"`)
 }
@@ -694,7 +696,7 @@ func TestIsOIDCConditionKey(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			assert.Equal(t, tc.want, isOIDCConditionKey(tc.in))
+			assert.Equal(t, tc.want, iamcatalog.IsOIDCConditionKey(tc.in))
 		})
 	}
 }
@@ -725,7 +727,7 @@ func TestCheckPolicy_ConditionKey_OIDCAcceptedForWildcardActions(t *testing.T) {
 					},
 				},
 			}
-			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+			require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 		})
 	}
 }
@@ -749,7 +751,7 @@ func TestCheckPolicy_ConditionKey_OIDCNotTriggeredByOtherServiceWildcards(t *tes
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"oidc.example.com:sub"`)
 }
@@ -766,7 +768,7 @@ func TestCheckPolicy_ConditionKey_OIDCNotTriggeredByOtherServiceWildcards(t *tes
 // kms:DescribeKey deliberately does not, so the per-action enforcement
 // path can be exercised. svcKeyTypes pins a declared type so the
 // operator type-check tests have something to read.
-func withPlaceholderKeys(t *testing.T) *Catalog {
+func withPlaceholderKeys(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"kms": {
@@ -786,7 +788,7 @@ func withPlaceholderKeys(t *testing.T) *Catalog {
 			svcConditionKeys: []string{"s3:ExistingObjectTag/${key}"},
 		},
 	})
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_ConditionKey_PlaceholderColonForm_Allowed(t *testing.T) {
@@ -809,7 +811,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderColonForm_Allowed(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_PlaceholderSlashForm_Allowed(t *testing.T) {
@@ -832,7 +834,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderSlashForm_Allowed(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_PlaceholderKey_MultipleUserValues(t *testing.T) {
@@ -853,7 +855,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_MultipleUserValues(t *testing.T
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_PlaceholderKey_Rejections(t *testing.T) {
@@ -884,7 +886,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_Rejections(t *testing.T) {
 					},
 				},
 			}
-			err := CheckPolicy(context.Background(), c, policy)
+			err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "condition key")
 		})
@@ -910,7 +912,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_NotValidForAction(t *testing.T)
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"kms:EncryptionContext:tenant"`)
 }
@@ -940,7 +942,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_TemplateLiteral_Rejected(t *tes
 					},
 				},
 			}
-			err := CheckPolicy(context.Background(), c, policy)
+			err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "condition key")
 		})
@@ -966,7 +968,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_LiteralDollarInValue_Accepted(t
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_PlaceholderKey_WildcardActionFallback(t *testing.T) {
@@ -985,7 +987,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_WildcardActionFallback(t *testi
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_PlaceholderKey_TypeCheck(t *testing.T) {
@@ -1010,7 +1012,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_TypeCheck(t *testing.T) {
 				},
 			},
 		}
-		require.NoError(t, CheckPolicy(context.Background(), c, policy))
+		require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 	})
 
 	t.Run("NumericEquals mismatches String type", func(t *testing.T) {
@@ -1026,7 +1028,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_TypeCheck(t *testing.T) {
 				},
 			},
 		}
-		err := CheckPolicy(context.Background(), c, policy)
+		err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "expects a Numeric key")
 		assert.Contains(t, err.Error(), "is declared as String")
@@ -1048,7 +1050,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_FromResource_Allowed(t *testing
 			},
 		},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -1061,7 +1063,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_FromResource_Allowed(t *testing
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionType_OperatorMatchesKeyType(t *testing.T) {
@@ -1077,7 +1079,7 @@ func TestCheckPolicy_ConditionType_OperatorMatchesKeyType(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionType_OperatorMismatch_Flagged(t *testing.T) {
@@ -1094,7 +1096,7 @@ func TestCheckPolicy_ConditionType_OperatorMismatch_Flagged(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `operator StringEquals expects a String key, but "s3:max-keys" is declared as Numeric`)
 }
@@ -1122,7 +1124,7 @@ func TestCheckPolicy_ConditionType_OperatorModifiersStripped(t *testing.T) {
 					},
 				},
 			}
-			require.NoError(t, CheckPolicy(context.Background(), c, policy), op)
+			require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy), op)
 		})
 	}
 }
@@ -1141,7 +1143,7 @@ func TestCheckPolicy_ConditionType_NullOperator_AcceptsAnyType(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionType_AwsPrefixKey_SkipsTypeCheck(t *testing.T) {
@@ -1158,7 +1160,7 @@ func TestCheckPolicy_ConditionType_AwsPrefixKey_SkipsTypeCheck(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_FromActionResource_Allowed(t *testing.T) {
@@ -1178,7 +1180,7 @@ func TestCheckPolicy_ConditionKey_FromActionResource_Allowed(t *testing.T) {
 			},
 		},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -1189,7 +1191,7 @@ func TestCheckPolicy_ConditionKey_FromActionResource_Allowed(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_FromTopLevelResource_Allowed(t *testing.T) {
@@ -1205,7 +1207,7 @@ func TestCheckPolicy_ConditionKey_FromTopLevelResource_Allowed(t *testing.T) {
 			resourceKeys:    map[string][]string{"widget": {"svc:WidgetOwner"}},
 		},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -1216,7 +1218,7 @@ func TestCheckPolicy_ConditionKey_FromTopLevelResource_Allowed(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionKey_ResourceLevel_StillRejectsUnknown(t *testing.T) {
@@ -1232,7 +1234,7 @@ func TestCheckPolicy_ConditionKey_ResourceLevel_StillRejectsUnknown(t *testing.T
 			},
 		},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -1243,7 +1245,7 @@ func TestCheckPolicy_ConditionKey_ResourceLevel_StillRejectsUnknown(t *testing.T
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `condition key "svc:TotallyMadeUp"`)
 }
@@ -1261,7 +1263,7 @@ func TestCheckPolicy_ConditionKey_WildcardAction_IncludesResourceLevelKeys(t *te
 			},
 		},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -1272,7 +1274,7 @@ func TestCheckPolicy_ConditionKey_WildcardAction_IncludesResourceLevelKeys(t *te
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_ConditionType_UnknownOperator_SkipsTypeCheck(t *testing.T) {
@@ -1290,13 +1292,13 @@ func TestCheckPolicy_ConditionType_UnknownOperator_SkipsTypeCheck(t *testing.T) 
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 // withResources wires up a catalog where s3 has GetObject (object only),
 // ListBucket (bucket only), and PutBucketPolicy (bucket only), each tied to
 // the appropriate resource type with realistic ARN templates.
-func withResources(t *testing.T) *Catalog {
+func withResources(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"s3": {
@@ -1316,7 +1318,7 @@ func withResources(t *testing.T) *Catalog {
 			},
 		},
 	})
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_Resource_Valid(t *testing.T) {
@@ -1329,7 +1331,7 @@ func TestCheckPolicy_Resource_Valid(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_BucketArnOnObjectAction_Rejected(t *testing.T) {
@@ -1345,7 +1347,7 @@ func TestCheckPolicy_Resource_BucketArnOnObjectAction_Rejected(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `resource "arn:aws:s3:::my-bucket"`)
 	assert.Contains(t, err.Error(), "does not match any ARN format")
@@ -1361,7 +1363,7 @@ func TestCheckPolicy_Resource_BareStar(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_BareStar_InsideList(t *testing.T) {
@@ -1374,7 +1376,7 @@ func TestCheckPolicy_Resource_BareStar_InsideList(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_WildcardWithinARN(t *testing.T) {
@@ -1398,7 +1400,7 @@ func TestCheckPolicy_Resource_WildcardWithinARN(t *testing.T) {
 					},
 				},
 			}
-			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+			require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 		})
 	}
 }
@@ -1416,7 +1418,7 @@ func TestCheckPolicy_Resource_MultipleActions_UnionsPatterns(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_WildcardActionFallsBackToServiceArns(t *testing.T) {
@@ -1431,7 +1433,7 @@ func TestCheckPolicy_Resource_WildcardActionFallsBackToServiceArns(t *testing.T)
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_BareStarAction_SkipsCheck(t *testing.T) {
@@ -1446,7 +1448,7 @@ func TestCheckPolicy_Resource_BareStarAction_SkipsCheck(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_NotResource_Skipped(t *testing.T) {
@@ -1461,13 +1463,13 @@ func TestCheckPolicy_Resource_NotResource_Skipped(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_NetworkFailure_Surfaces(t *testing.T) {
 	// Wildcard action skips checkOne's Lookup so the first network attempt
-	// happens inside checkResources. The ErrUnavailable must bubble out.
-	c := New("http://127.0.0.1:1")
+	// happens inside checkResources. The iamcatalog.ErrUnavailable must bubble out.
+	c := iamcatalog.New("http://127.0.0.1:1")
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -1476,9 +1478,9 @@ func TestCheckPolicy_Resource_NetworkFailure_Surfaces(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrUnavailable)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
 func TestCheckPolicy_Resource_WildcardServicePrefix_SkipsCheck(t *testing.T) {
@@ -1493,7 +1495,7 @@ func TestCheckPolicy_Resource_WildcardServicePrefix_SkipsCheck(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_UnknownService_ContinuesEvaluation(t *testing.T) {
@@ -1509,7 +1511,7 @@ func TestCheckPolicy_Resource_UnknownService_ContinuesEvaluation(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err) // checkOne flags unknownsvc
 	assert.Contains(t, err.Error(), "unknown AWS service prefix")
 	assert.NotContains(t, err.Error(), "does not match", "valid s3 object ARN must still pass")
@@ -1527,7 +1529,7 @@ func TestCheckPolicy_Resource_NotActionStatement_Skipped(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_ObjectArnOnBucketAction_Rejected(t *testing.T) {
@@ -1544,7 +1546,7 @@ func TestCheckPolicy_Resource_ObjectArnOnBucketAction_Rejected(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `resource "arn:aws:s3:::my-bucket/key"`)
 }
@@ -1562,7 +1564,7 @@ func TestCheckPolicy_Resource_ObjectKey_WithSlashes_Accepted(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_AllActionsUnresolved_SkipsCheck(t *testing.T) {
@@ -1579,7 +1581,7 @@ func TestCheckPolicy_Resource_AllActionsUnresolved_SkipsCheck(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err) // checkOne still flags the unknown service
 	assert.Contains(t, err.Error(), "unknown AWS service prefix")
 	assert.NotContains(t, err.Error(), "does not match")
@@ -1597,7 +1599,7 @@ func TestCheckPolicy_Resource_AllActionsMalformed_SkipsCheck(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "malformed action")
 	assert.NotContains(t, err.Error(), "does not match")
@@ -1611,7 +1613,7 @@ func TestCheckPolicy_Resource_AllActionsMalformed_SkipsCheck(t *testing.T) {
 // our handling only looks at len(), where both shapes are equivalent — so
 // the test exercises exactly the same code path checkResources hits in
 // production for iam:ListUsers and friends.
-func withServiceLevelAction(t *testing.T) *Catalog {
+func withServiceLevelAction(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"svc": {
@@ -1631,7 +1633,7 @@ func withServiceLevelAction(t *testing.T) *Catalog {
 			},
 		},
 	})
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_Resource_ServiceLevelAction_AcceptsServiceShapedArn(t *testing.T) {
@@ -1651,7 +1653,7 @@ func TestCheckPolicy_Resource_ServiceLevelAction_AcceptsServiceShapedArn(t *test
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_ServiceLevelAction_RejectsCrossServiceArn(t *testing.T) {
@@ -1667,7 +1669,7 @@ func TestCheckPolicy_Resource_ServiceLevelAction_RejectsCrossServiceArn(t *testi
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
@@ -1685,7 +1687,7 @@ func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown action "NotARealAction"`)
 	assert.NotContains(t, err.Error(), "does not match", "valid s3 ARN should not be flagged when only the action name is wrong")
@@ -1697,7 +1699,7 @@ func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 // log-stream template adds ":log-stream:..." rather than "/...". The
 // resource validator's heuristic must let the last placeholder of the short
 // template span '/'.
-func withColonExtendedTemplates(t *testing.T) *Catalog {
+func withColonExtendedTemplates(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"svc": {
@@ -1715,7 +1717,7 @@ func withColonExtendedTemplates(t *testing.T) *Catalog {
 			},
 		},
 	})
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_Resource_ColonExtendedSibling_LastPlaceholderAllowsSlash(t *testing.T) {
@@ -1732,7 +1734,7 @@ func TestCheckPolicy_Resource_ColonExtendedSibling_LastPlaceholderAllowsSlash(t 
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_IntermediatePlaceholder_AllowsSlash(t *testing.T) {
@@ -1749,7 +1751,7 @@ func TestCheckPolicy_Resource_IntermediatePlaceholder_AllowsSlash(t *testing.T) 
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_IamWildcardSpansColon(t *testing.T) {
@@ -1772,7 +1774,7 @@ func TestCheckPolicy_Resource_IamWildcardSpansColon(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_IamWildcard_SpansColonExtensionLiteral(t *testing.T) {
@@ -1793,7 +1795,7 @@ func TestCheckPolicy_Resource_IamWildcard_SpansColonExtensionLiteral(t *testing.
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_IamWildcard_BroadServicePrefix(t *testing.T) {
@@ -1813,7 +1815,7 @@ func TestCheckPolicy_Resource_IamWildcard_BroadServicePrefix(t *testing.T) {
 			},
 		},
 	}
-	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 }
 
 func TestCheckPolicy_Resource_IamWildcard_RejectsCrossServiceMismatch(t *testing.T) {
@@ -1830,7 +1832,7 @@ func TestCheckPolicy_Resource_IamWildcard_RejectsCrossServiceMismatch(t *testing
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
@@ -1848,7 +1850,7 @@ func TestCheckPolicy_Resource_IamWildcard_RejectsConcreteMismatch(t *testing.T) 
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
@@ -1870,7 +1872,7 @@ func TestCheckPolicy_Resource_ColonExtendedSibling_RejectsConcreteChildShape(t *
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
@@ -1890,7 +1892,7 @@ func TestCheckPolicy_Resource_SlashExtendedSibling_LastPlaceholderStaysBounded(t
 			},
 		},
 	})
-	c := New(fs.server.URL)
+	c := iamcatalog.New(fs.server.URL)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
@@ -1899,7 +1901,7 @@ func TestCheckPolicy_Resource_SlashExtendedSibling_LastPlaceholderStaysBounded(t
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
@@ -1908,7 +1910,7 @@ func TestCheckPolicy_Resource_SlashExtendedSibling_LastPlaceholderStaysBounded(t
 // a colon-extension "function-alias" sibling — the structural shape AWS
 // uses for Lambda function vs function-alias / function-version. Used by
 // the qualifier-tail end-to-end tests below.
-func withLambdaShape(t *testing.T) *Catalog {
+func withLambdaShape(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"svc": {
@@ -1925,7 +1927,7 @@ func withLambdaShape(t *testing.T) *Catalog {
 			},
 		},
 	})
-	return New(fs.server.URL)
+	return iamcatalog.New(fs.server.URL)
 }
 
 func TestCheckPolicy_Resource_QualifierTail_Accepted(t *testing.T) {
@@ -1947,7 +1949,7 @@ func TestCheckPolicy_Resource_QualifierTail_Accepted(t *testing.T) {
 					map[string]any{"Action": "svc:InvokeThing", "Resource": arn},
 				},
 			}
-			require.NoError(t, CheckPolicy(context.Background(), c, policy))
+			require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 		})
 	}
 }
@@ -1965,7 +1967,7 @@ func TestCheckPolicy_Resource_QualifierTail_RejectsTwoDeep(t *testing.T) {
 			},
 		},
 	}
-	err := CheckPolicy(context.Background(), c, policy)
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not match any ARN format")
 }
@@ -1973,7 +1975,7 @@ func TestCheckPolicy_Resource_QualifierTail_RejectsTwoDeep(t *testing.T) {
 func TestCompileARNTemplate_MalformedReturnsNil(t *testing.T) {
 	// An unterminated ${ should not panic or compile garbage; the parser
 	// returns nil and the caller drops the template.
-	assert.Nil(t, compileARNTemplate("arn:${broken", nil))
+	assert.Nil(t, iamcatalog.CompileARNTemplate("arn:${broken", nil))
 }
 
 func TestCompileARNTemplate_ColonExtendedSiblingAllowsQualifierTail(t *testing.T) {
@@ -1984,7 +1986,7 @@ func TestCompileARNTemplate_ColonExtendedSiblingAllowsQualifierTail(t *testing.T
 	// to work via the new regex's "[^:]+" segment.
 	base := "arn:${Partition}:lambda:${Region}:${Account}:function:${FunctionName}"
 	alias := "arn:${Partition}:lambda:${Region}:${Account}:function:${FunctionName}:${Alias}"
-	re := compileARNTemplate(base, []string{base, alias})
+	re := iamcatalog.CompileARNTemplate(base, []string{base, alias})
 	require.NotNil(t, re)
 	for _, ok := range []string{
 		"arn:aws:lambda:us-east-1:123456789012:function:my-fn",
@@ -2013,7 +2015,7 @@ func TestCompileARNTemplate_LiteralBetweenColonSiblingKeepsRule4(t *testing.T) {
 	// template (it has to match log-stream's own template instead).
 	base := "arn:${Partition}:logs:${Region}:${Account}:log-group:${LogGroupName}"
 	stream := "arn:${Partition}:logs:${Region}:${Account}:log-group:${LogGroupName}:log-stream:${LogStreamName}"
-	re := compileARNTemplate(base, []string{base, stream})
+	re := iamcatalog.CompileARNTemplate(base, []string{base, stream})
 	require.NotNil(t, re)
 	assert.True(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:/aws/codebuild/foo"))
 	assert.True(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:/aws/codebuild/foo:*"))
@@ -2059,7 +2061,7 @@ func TestSplitPlaceholderKey(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			p, ok := splitPlaceholderKey(tc.in)
+			p, ok := iamcatalog.SplitPlaceholderKey(tc.in)
 			assert.Equal(t, tc.ok, ok, "ok mismatch")
 			assert.Equal(t, tc.prefix, p, "prefix mismatch")
 		})
@@ -2082,7 +2084,7 @@ func TestSplitAction(t *testing.T) {
 		{"a:b:c:d", "", "", false},
 	}
 	for _, tc := range cases {
-		p, n, ok := splitAction(tc.in)
+		p, n, ok := iamcatalog.SplitAction(tc.in)
 		assert.Equal(t, tc.ok, ok, tc.in)
 		assert.Equal(t, tc.prefix, p, tc.in)
 		assert.Equal(t, tc.name, n, tc.in)
