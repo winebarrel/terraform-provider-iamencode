@@ -754,6 +754,316 @@ func TestCheckPolicy_ConditionKey_OIDCNotTriggeredByOtherServiceWildcards(t *tes
 	assert.Contains(t, err.Error(), `"oidc.example.com:sub"`)
 }
 
+// withPlaceholderKeys wires up two services that use placeholder-tail
+// condition keys. AWS expresses these as "<prefix><sep>${<placeholder>}"
+// where <sep> is ':' (kms:EncryptionContext:${EncryptionContextKey}) or '/'
+// (s3:ExistingObjectTag/${key}). Each instantiated user key shares the
+// declared prefix but supplies a value in place of the placeholder. The
+// validator must accept those instantiations while still rejecting genuine
+// typos that don't match any declared prefix.
+//
+// kms:Encrypt lists the placeholder key as an ActionConditionKey;
+// kms:DescribeKey deliberately does not, so the per-action enforcement
+// path can be exercised. svcKeyTypes pins a declared type so the
+// operator type-check tests have something to read.
+func withPlaceholderKeys(t *testing.T) *Catalog {
+	t.Helper()
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"kms": {
+			actions: map[string][]string{
+				"Encrypt":     {"kms:EncryptionContext:${EncryptionContextKey}"},
+				"DescribeKey": nil,
+			},
+			svcConditionKeys: []string{"kms:EncryptionContext:${EncryptionContextKey}"},
+			svcKeyTypes: map[string]string{
+				"kms:EncryptionContext:${EncryptionContextKey}": "String",
+			},
+		},
+		"s3": {
+			actions: map[string][]string{
+				"GetObject": {"s3:ExistingObjectTag/${key}"},
+			},
+			svcConditionKeys: []string{"s3:ExistingObjectTag/${key}"},
+		},
+	})
+	return New(fs.server.URL)
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderColonForm_Allowed(t *testing.T) {
+	// The canonical KMS shape: a real policy instantiates
+	// kms:EncryptionContext:${EncryptionContextKey} as
+	// kms:EncryptionContext:<some-user-defined-name>. The strict check used
+	// to flag this as an unknown key — the catalog only stores the templated
+	// form. The new prefix-pattern path accepts any value with the declared
+	// prefix.
+	c := withPlaceholderKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "kms:Encrypt",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"kms:EncryptionContext:aws:s3:arn": "arn:aws:s3:::bucket/key",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderSlashForm_Allowed(t *testing.T) {
+	// Service-specific tag-style keys (s3:ExistingObjectTag/${key},
+	// iam:ResourceTag/${TagKey}, etc.) use '/' as the placeholder
+	// separator. They share the same prefix-pattern semantics as the colon
+	// form. (The aws:* tag keys are short-circuited by the aws:* early-
+	// return in checkConditions and never reach the prefix path, so this
+	// test deliberately uses a non-aws service to exercise it.)
+	c := withPlaceholderKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "s3:GetObject",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"s3:ExistingObjectTag/Owner": "alice",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_MultipleUserValues(t *testing.T) {
+	// Different user values under the same declared prefix must all pass.
+	// Real policies often pin several encryption-context keys at once.
+	c := withPlaceholderKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "kms:Encrypt",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"kms:EncryptionContext:aws:s3:arn": "arn:aws:s3:::b/k",
+						"kms:EncryptionContext:tenant":     "alice",
+						"kms:EncryptionContext:purpose":    "audit-log",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_Rejections(t *testing.T) {
+	// Negative cases the prefix-pattern path must still reject so the new
+	// permissiveness doesn't mask real typos:
+	//   - "kms:EncryptionContext" (no trailing separator): looks like the
+	//     parent name but isn't a real catalog key.
+	//   - "kms:EncryptionContext:" (separator but empty value): would be
+	//     a nonsensical key at IAM evaluation time; flagging it here keeps
+	//     the validator strict.
+	//   - "kms:EncryptionContextX:foo" (typo in the prefix): genuine
+	//     mistake that the new path must not swallow.
+	c := withPlaceholderKeys(t)
+	cases := []string{
+		"kms:EncryptionContext",
+		"kms:EncryptionContext:",
+		"kms:EncryptionContextX:foo",
+	}
+	for _, k := range cases {
+		t.Run(k, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action": "kms:Encrypt",
+						"Condition": map[string]any{
+							"StringEquals": map[string]any{k: "x"},
+						},
+					},
+				},
+			}
+			err := CheckPolicy(context.Background(), c, policy)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "condition key")
+		})
+	}
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_NotValidForAction(t *testing.T) {
+	// kms:DescribeKey is wired with no ActionConditionKeys, so the per-
+	// action lookup returns an empty set and the placeholder key declared
+	// only at the service level (and on kms:Encrypt) must be rejected.
+	// This proves the per-action enforcement applies to placeholders the
+	// same way it does to exact keys.
+	c := withPlaceholderKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "kms:DescribeKey",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"kms:EncryptionContext:tenant": "alice",
+					},
+				},
+			},
+		},
+	}
+	err := CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"kms:EncryptionContext:tenant"`)
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_TemplateLiteral_Rejected(t *testing.T) {
+	// A user who copy-pastes the AWS docs example verbatim ends up writing
+	// the placeholder template ("${EncryptionContextKey}") as the literal
+	// tail of the condition key. IAM doesn't expand "${...}" in condition
+	// keys, so this never matches anything at evaluation time — it's
+	// exactly the kind of typo strict mode exists to surface. The prefix
+	// path must NOT silently accept it just because the leading bytes
+	// agree with the declared prefix.
+	c := withPlaceholderKeys(t)
+	cases := []string{
+		"kms:EncryptionContext:${EncryptionContextKey}", // verbatim docs paste
+		"kms:EncryptionContext:${}",                     // empty-body template typo
+	}
+	for _, k := range cases {
+		t.Run(k, func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action": "kms:Encrypt",
+						"Condition": map[string]any{
+							"StringEquals": map[string]any{k: "x"},
+						},
+					},
+				},
+			}
+			err := CheckPolicy(context.Background(), c, policy)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "condition key")
+		})
+	}
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_LiteralDollarInValue_Accepted(t *testing.T) {
+	// Sanity guard for the template-literal rejection: a user value that
+	// happens to contain "${...}" somewhere past the leading byte (e.g. as
+	// a substring inside an opaque tag value) must still be accepted. The
+	// reject rule keys on the leading "${" only, so "prefix${literal}" in
+	// the middle of a tail doesn't get caught.
+	c := withPlaceholderKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "kms:Encrypt",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"kms:EncryptionContext:tenant${literal}id": "alice",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_WildcardActionFallback(t *testing.T) {
+	// "kms:*" doesn't narrow to one action, so we accept any condition key
+	// the service declares anywhere — placeholder prefixes included.
+	c := withPlaceholderKeys(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "kms:*",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"kms:EncryptionContext:tenant": "alice",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_TypeCheck(t *testing.T) {
+	// The declared type on a placeholder key must apply to every user
+	// instantiation under that prefix. Catalog declares
+	// kms:EncryptionContext:${...} as String, so:
+	//   - StringEquals on kms:EncryptionContext:foo passes
+	//   - NumericEquals on kms:EncryptionContext:foo flags an operator
+	//     mismatch, just like it would on a non-placeholder String key.
+	c := withPlaceholderKeys(t)
+
+	t.Run("StringEquals matches String type", func(t *testing.T) {
+		policy := map[string]any{
+			"Statement": []any{
+				map[string]any{
+					"Action": "kms:Encrypt",
+					"Condition": map[string]any{
+						"StringEquals": map[string]any{
+							"kms:EncryptionContext:tenant": "alice",
+						},
+					},
+				},
+			},
+		}
+		require.NoError(t, CheckPolicy(context.Background(), c, policy))
+	})
+
+	t.Run("NumericEquals mismatches String type", func(t *testing.T) {
+		policy := map[string]any{
+			"Statement": []any{
+				map[string]any{
+					"Action": "kms:Encrypt",
+					"Condition": map[string]any{
+						"NumericEquals": map[string]any{
+							"kms:EncryptionContext:tenant": "1",
+						},
+					},
+				},
+			},
+		}
+		err := CheckPolicy(context.Background(), c, policy)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "expects a Numeric key")
+		assert.Contains(t, err.Error(), "is declared as String")
+	})
+}
+
+func TestCheckPolicy_ConditionKey_PlaceholderKey_FromResource_Allowed(t *testing.T) {
+	// Placeholder keys declared only via Actions[].Resources[].ConditionKeys
+	// must also be merged into the per-action allowed set. The existing
+	// exact-key merge path (TestCheckPolicy_ConditionKey_FromActionResource_Allowed)
+	// confirmed it works for non-placeholder keys; this guards the placeholder
+	// case the same way.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions:         map[string][]string{"DoThing": nil},
+			actionResources: map[string][]string{"DoThing": {"widget"}},
+			actionResourceKeys: map[string]map[string][]string{
+				"DoThing": {"widget": {"svc:WidgetTag/${TagKey}"}},
+			},
+		},
+	})
+	c := New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action": "svc:DoThing",
+				"Condition": map[string]any{
+					"StringEquals": map[string]any{
+						"svc:WidgetTag/owner": "alice",
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, CheckPolicy(context.Background(), c, policy))
+}
+
 func TestCheckPolicy_ConditionType_OperatorMatchesKeyType(t *testing.T) {
 	c := withConditionKeys(t)
 	policy := map[string]any{
@@ -1712,6 +2022,48 @@ func TestCompileARNTemplate_LiteralBetweenColonSiblingKeepsRule4(t *testing.T) {
 	// A literal qualifier tail (no wildcard) must NOT match the base either —
 	// rule 4 only allows IAM wildcard tails.
 	assert.False(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:foo:bar"))
+}
+
+func TestSplitPlaceholderKey(t *testing.T) {
+	// Direct unit test for the placeholder-tail detector. The integration
+	// tests above exercise the happy path through CheckPolicy, but the
+	// defensive branches (missing "${" opener, unsupported separator) need
+	// targeted coverage to stay honest about what's verified.
+	cases := []struct {
+		in     string
+		prefix string
+		ok     bool
+	}{
+		// Happy path: both colon and slash separators with a real placeholder.
+		{"kms:EncryptionContext:${EncryptionContextKey}", "kms:EncryptionContext:", true},
+		{"s3:ExistingObjectTag/${key}", "s3:ExistingObjectTag/", true},
+
+		// Exact-match keys (no placeholder tail) — fall through cleanly.
+		{"s3:prefix", "", false},
+		{"sts:RoleSessionName", "", false},
+		{"", "", false},
+
+		// Defensive branches: trailing '}' but no "${" opener, or the opener
+		// sits at position 0 with no prefix to keep. Real catalogs don't
+		// produce these shapes, but the early-out keeps the validator from
+		// inventing a meaningless prefix if AWS ever ships oddly-formed data.
+		{"foo}", "", false},
+		{"${EncryptionContextKey}", "", false},
+
+		// Defensive: '${' is present but the immediately preceding rune is
+		// not the ':' or '/' separator we recognize. Treating this as an
+		// exact key avoids silently turning a typo'd key into a prefix.
+		{"kms:EncryptionContext${EncryptionContextKey}", "", false},
+		{"kms.EncryptionContext:${X}", "kms.EncryptionContext:", true},
+		{"foo.bar${X}", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			p, ok := splitPlaceholderKey(tc.in)
+			assert.Equal(t, tc.ok, ok, "ok mismatch")
+			assert.Equal(t, tc.prefix, p, "prefix mismatch")
+		})
+	}
 }
 
 func TestSplitAction(t *testing.T) {

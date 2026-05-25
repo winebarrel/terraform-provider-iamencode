@@ -204,6 +204,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 	}
 
 	allowed := make(map[string]struct{})
+	allowedPrefixes := make(map[string]struct{})
 	keyTypes := make(map[string]string)
 	for _, a := range actions {
 		if a == "*" {
@@ -229,15 +230,19 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 		case err != nil || svc == nil:
 			return nil, err
 		}
-		var keys map[string]struct{}
+		var keys, prefixes map[string]struct{}
 		if strings.ContainsAny(name, "*?") {
 			keys = svc.allKeys
+			prefixes = svc.allKeyPrefixes
 		} else if perAction, has := svc.keysByAction[strings.ToLower(name)]; has {
 			keys = perAction
+			prefixes = svc.keyPrefixesByAction[strings.ToLower(name)]
 		} else {
 			keys = svc.allKeys
+			prefixes = svc.allKeyPrefixes
 		}
 		maps.Copy(allowed, keys)
+		maps.Copy(allowedPrefixes, prefixes)
 		// Merge type info too. Same key declared by multiple services should
 		// have the same type; last write wins if they disagree (unlikely).
 		maps.Copy(keyTypes, svc.keyTypes)
@@ -266,7 +271,18 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 			if strings.HasPrefix(lk, "aws:") {
 				continue // AWS-global condition keys are always allowed
 			}
-			if _, ok := allowed[lk]; !ok {
+			// Two acceptance paths: a direct hit in the exact-match set, or
+			// (failing that) a hit against one of the catalog-declared
+			// placeholder prefixes — keys like kms:EncryptionContext:<user>
+			// or s3:ExistingObjectTag/<user>. The type for a prefix match
+			// is looked up under the prefix itself (keyTypes is indexed by
+			// the canonical form addConditionKey chose at catalog parse time).
+			var actualType string
+			if _, ok := allowed[lk]; ok {
+				actualType = keyTypes[lk]
+			} else if p := matchPlaceholderPrefix(lk, allowedPrefixes); p != "" {
+				actualType = keyTypes[p]
+			} else {
 				if allowsOIDCKeys && isOIDCConditionKey(key) {
 					continue
 				}
@@ -279,7 +295,6 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 			// and the operator's expected type, confirm they match. Missing
 			// either side (unknown operator or untyped key) means we can't
 			// judge — skip silently.
-			actualType := keyTypes[lk]
 			if !opKnown || expectedType == "" || actualType == "" {
 				continue
 			}
@@ -291,6 +306,32 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 		}
 	}
 	return issues, nil
+}
+
+// matchPlaceholderPrefix reports which (if any) declared placeholder prefix
+// the user-supplied condition key instantiates. The match requires at least
+// one character past the prefix — an empty tail like "kms:EncryptionContext:"
+// alone has no instantiated value and is still flagged as an unknown key,
+// keeping the validator strict against malformed structural shapes.
+//
+// A tail that *itself* starts with "${" is rejected too. This catches the
+// common docs-paste typo where a user copies "kms:EncryptionContext:${EncryptionContextKey}"
+// verbatim into their policy: IAM does not expand "${...}" in condition
+// keys, so the literal template would never match anything at evaluation
+// time. The leading-only check is deliberate — a tail that contains "${"
+// further in (e.g. an opaque tag value with a literal "${" substring) is
+// still accepted, since only the leading position is a clear copy-paste
+// signal.
+func matchPlaceholderPrefix(key string, prefixes map[string]struct{}) string {
+	for p := range prefixes {
+		if len(key) > len(p) && strings.HasPrefix(key, p) {
+			if strings.HasPrefix(key[len(p):], "${") {
+				continue
+			}
+			return p
+		}
+	}
+	return ""
 }
 
 // operatorExpectedType returns the catalog-style type that the given IAM
