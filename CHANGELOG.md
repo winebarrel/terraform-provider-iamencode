@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.6.0] - 2026-05-26
+
+- `policy_strict`: flag Actions whose ARN format(s) don't match any Resource in the Statement. A common mistake — `["s3:GetObject", "s3:ListBucket"]` paired with only `arn:aws:s3:::bucket/key` — now reports `s3:ListBucket` as orphaned, since its bucket-level template can't accept an object ARN and the action would silently never apply at evaluation time. The existing reverse-direction check (Resource that fits no action) is unchanged.
+
 ## [1.5.0] - 2026-05-25
 
 - `policy_strict`: accept user condition keys that instantiate a placeholder-tail AWS-declared key. For an AWS-declared key like `kms:EncryptionContext:${EncryptionContextKey}`, a user key like `kms:EncryptionContext:aws:s3:arn` is now matched as a prefix; exact-match lookups previously flagged it as unknown.
