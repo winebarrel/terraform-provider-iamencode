@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -385,13 +386,27 @@ var opTypeTable = map[string]string{
 	"ArnNotLike":                "ARN",
 }
 
-// checkResources validates that each Resource ARN matches one of the ARN
-// templates declared by at least one of the statement's actions. Returns
-// (issues, err) where err is ErrUnavailable. Wildcards skip in the same
-// pattern as checkConditions: wildcard service prefix or bare "*" Action
-// skips the whole check; wildcard action name falls back to the service-
-// wide union of ARN formats. NotResource statements skip entirely — the
-// listed exclusions are the wrong domain to validate against.
+// checkResources validates the Action × Resource cross-product in two
+// directions:
+//
+//  1. Resource-side: each Resource ARN must match at least one of the ARN
+//     templates declared by some action in the statement. Catches the
+//     classic "wrong shape" mistake — e.g. a bucket ARN given to a
+//     statement whose only action is s3:GetObject (object-only).
+//
+//  2. Action-side: each Action must have at least one Resource in the
+//     statement that matches its ARN templates. Catches the mirror
+//     mistake — a statement listing s3:ListBucket alongside s3:GetObject
+//     but supplying only an object ARN, leaving ListBucket orphaned.
+//
+// A bare "*" Resource short-circuits direction 2 entirely (it covers every
+// action). Wildcards on the Action side skip in the same pattern as
+// checkConditions: wildcard service prefix or bare "*" Action skips the
+// whole check; wildcard action name falls back to the service-wide union
+// of ARN formats. NotResource statements skip entirely — the listed
+// exclusions are the wrong domain to validate against.
+//
+// Returns (issues, err) where err is ErrUnavailable.
 func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtIdx int) ([]string, error) {
 	resources := appendStringOrList(nil, stmt["Resource"])
 	if len(resources) == 0 {
@@ -402,7 +417,14 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		return nil, nil
 	}
 
-	patterns := make([]*regexp.Regexp, 0)
+	// Per-action pattern tracking lets us answer both directions:
+	// direction 1 unions everything; direction 2 needs each action's set
+	// separately so an orphaned action can be named in the error.
+	type actionEntry struct {
+		token    string // original Action token, used for error messages
+		patterns []*regexp.Regexp
+	}
+	var perAction []actionEntry
 	resolvedAny := false
 	for _, a := range actions {
 		if a == "*" {
@@ -425,12 +447,11 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			return nil, err
 		}
 		resolvedAny = true
+		var pats []*regexp.Regexp
 		if strings.ContainsAny(name, "*?") {
-			patterns = append(patterns, svc.allArns...)
-			continue
-		}
-		if perAction, has := svc.arnsByAction[strings.ToLower(name)]; has && len(perAction) > 0 {
-			patterns = append(patterns, perAction...)
+			pats = svc.allArns
+		} else if pa, has := svc.arnsByAction[strings.ToLower(name)]; has && len(pa) > 0 {
+			pats = pa
 		} else {
 			// Two cases share this fallback to the service-wide ARN union:
 			//
@@ -447,8 +468,9 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			//      pairs them with a concrete IAM-shaped Resource
 			//      ("arn:aws:iam::ACCOUNT:user/"). Validate against
 			//      allArns rather than the empty per-action set.
-			patterns = append(patterns, svc.allArns...)
+			pats = svc.allArns
 		}
+		perAction = append(perAction, actionEntry{token: a, patterns: pats})
 	}
 	if !resolvedAny {
 		// Every action was malformed or referenced an unknown service. The
@@ -458,25 +480,68 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		return nil, nil
 	}
 
-	var issues []string
-	for _, r := range resources {
+	// Build the (resource × action) hit matrix once. Each cell is
+	// short-circuited at the first matching template, so total regex work
+	// is the same as the old pooled-patterns loop.
+	matchers := make([]resourceMatcher, len(resources))
+	hasBareStar := false
+	for i, r := range resources {
 		if r == "*" {
-			continue // catch-all is always valid
+			hasBareStar = true
+			continue
 		}
-		rm := newResourceMatcher(r)
-		matched := false
-		for _, p := range patterns {
-			if rm.match(p) {
-				matched = true
-				break
-			}
+		matchers[i] = newResourceMatcher(r)
+	}
+	matches := make([][]bool, len(resources))
+	for i := range matches {
+		matches[i] = make([]bool, len(perAction))
+	}
+	for i, r := range resources {
+		if r == "*" {
+			continue
 		}
-		if !matched {
+		rm := matchers[i]
+		for j, ae := range perAction {
+			matches[i][j] = slices.ContainsFunc(ae.patterns, func(p *regexp.Regexp) bool {
+				return rm.match(p)
+			})
+		}
+	}
+
+	var issues []string
+
+	// Direction 1: every non-star Resource has at least one action it fits.
+	for i, r := range resources {
+		if r == "*" {
+			continue
+		}
+		if !slices.Contains(matches[i], true) {
 			issues = append(issues, fmt.Sprintf(
 				"Statement[%d]: resource %q does not match any ARN format for the statement's actions",
 				stmtIdx, r))
 		}
 	}
+
+	// Direction 2: every Action has at least one Resource it fits.
+	// A bare "*" anywhere in Resource covers every action. Actions whose
+	// pattern set is empty (only possible with a service catalog that
+	// declares zero ARN formats — fake-test territory, not real AWS) are
+	// skipped to stay consistent with the "no info → don't double-flag"
+	// philosophy used by checkOne and the unknown-service path above.
+	if !hasBareStar {
+		for j, ae := range perAction {
+			if len(ae.patterns) == 0 {
+				continue
+			}
+			covered := slices.ContainsFunc(matches, func(row []bool) bool { return row[j] })
+			if !covered {
+				issues = append(issues, fmt.Sprintf(
+					"Statement[%d]: action %q has no resource that matches its ARN format",
+					stmtIdx, ae.token))
+			}
+		}
+	}
+
 	return issues, nil
 }
 
