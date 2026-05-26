@@ -1909,6 +1909,26 @@ func TestCheckPolicy_Resource_PerAction_MultipleStatements_IndexedSeparately(t *
 	assert.NotContains(t, err.Error(), "Statement[1]")
 }
 
+func TestCheckPolicy_Resource_PerAction_FullyCoveredPairs_ShortCircuit(t *testing.T) {
+	// When every Resource and every Action already has its "matched" bit
+	// set, subsequent pair iterations must skip the inner regex work — the
+	// optimization that lets the matching loop decay toward the old pooled-
+	// patterns cost in well-formed policies. Two bucket-only actions paired
+	// with two bucket ARNs exercises the late-iteration "both already true"
+	// branch (the last pair sees resourceMatched and actionCovered both
+	// already set from earlier pairs).
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:ListBucket", "s3:PutBucketPolicy"},
+				"Resource": []any{"arn:aws:s3:::bucket-one", "arn:aws:s3:::bucket-two"},
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
 func TestCheckPolicy_Resource_PerAction_ServiceWithoutArns_SkipsActionCheck(t *testing.T) {
 	// Defensive: a service whose catalog declares zero ARN templates
 	// anywhere yields an empty per-action pattern set. Without info to

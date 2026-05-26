@@ -480,31 +480,34 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		return nil, nil
 	}
 
-	// Build the (resource × action) hit matrix once. Each cell is
-	// short-circuited at the first matching template, so total regex work
-	// is the same as the old pooled-patterns loop.
-	matchers := make([]resourceMatcher, len(resources))
-	hasBareStar := false
+	// Both directions need only "did at least one match happen?" answers,
+	// so two 1D bitmaps (resource-side, action-side) are enough — no full
+	// R×A matrix. The inner regex work is skipped for pairs where both
+	// bits are already set, which lets the worst case decay toward the old
+	// pooled-patterns loop in policies that are mostly well-formed.
+	resourceMatched := make([]bool, len(resources))
+	actionCovered := make([]bool, len(perAction))
 	for i, r := range resources {
 		if r == "*" {
-			hasBareStar = true
+			// Bare "*" satisfies direction 1 for itself and covers every
+			// action for direction 2 in one shot.
+			resourceMatched[i] = true
+			for j := range actionCovered {
+				actionCovered[j] = true
+			}
 			continue
 		}
-		matchers[i] = newResourceMatcher(r)
-	}
-	matches := make([][]bool, len(resources))
-	for i := range matches {
-		matches[i] = make([]bool, len(perAction))
-	}
-	for i, r := range resources {
-		if r == "*" {
-			continue
-		}
-		rm := matchers[i]
+		rm := newResourceMatcher(r)
 		for j, ae := range perAction {
-			matches[i][j] = slices.ContainsFunc(ae.patterns, func(p *regexp.Regexp) bool {
+			if resourceMatched[i] && actionCovered[j] {
+				continue // no new information possible from this pair
+			}
+			if slices.ContainsFunc(ae.patterns, func(p *regexp.Regexp) bool {
 				return rm.match(p)
-			})
+			}) {
+				resourceMatched[i] = true
+				actionCovered[j] = true
+			}
 		}
 	}
 
@@ -512,34 +515,26 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 
 	// Direction 1: every non-star Resource has at least one action it fits.
 	for i, r := range resources {
-		if r == "*" {
+		if r == "*" || resourceMatched[i] {
 			continue
 		}
-		if !slices.Contains(matches[i], true) {
-			issues = append(issues, fmt.Sprintf(
-				"Statement[%d]: resource %q does not match any ARN format for the statement's actions",
-				stmtIdx, r))
-		}
+		issues = append(issues, fmt.Sprintf(
+			"Statement[%d]: resource %q does not match any ARN format for the statement's actions",
+			stmtIdx, r))
 	}
 
-	// Direction 2: every Action has at least one Resource it fits.
-	// A bare "*" anywhere in Resource covers every action. Actions whose
-	// pattern set is empty (only possible with a service catalog that
+	// Direction 2: every Action has at least one Resource it fits. Actions
+	// whose pattern set is empty (only possible with a service catalog that
 	// declares zero ARN formats — fake-test territory, not real AWS) are
 	// skipped to stay consistent with the "no info → don't double-flag"
 	// philosophy used by checkOne and the unknown-service path above.
-	if !hasBareStar {
-		for j, ae := range perAction {
-			if len(ae.patterns) == 0 {
-				continue
-			}
-			covered := slices.ContainsFunc(matches, func(row []bool) bool { return row[j] })
-			if !covered {
-				issues = append(issues, fmt.Sprintf(
-					"Statement[%d]: action %q has no resource that matches its ARN format",
-					stmtIdx, ae.token))
-			}
+	for j, ae := range perAction {
+		if len(ae.patterns) == 0 || actionCovered[j] {
+			continue
 		}
+		issues = append(issues, fmt.Sprintf(
+			"Statement[%d]: action %q has no resource that matches its ARN format",
+			stmtIdx, ae.token))
 	}
 
 	return issues, nil
