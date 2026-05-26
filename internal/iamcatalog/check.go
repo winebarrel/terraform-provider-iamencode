@@ -423,6 +423,13 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 	type actionEntry struct {
 		token    string // original Action token, used for error messages
 		patterns []*regexp.Regexp
+		// skipDir2 marks actions that contribute to direction 1 (so the
+		// resource still has *something* to match against) but must not
+		// drive direction 2. Set for non-wildcard action names that the
+		// catalog doesn't actually expose: checkOne already reports them
+		// as unknown, and "action %q has no resource that matches its ARN
+		// format" would mislead — the action has no real ARN format here.
+		skipDir2 bool
 	}
 	var perAction []actionEntry
 	// De-duplicate by lowercased action token. IAM actions are case-
@@ -458,8 +465,18 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		}
 		seenAction[key] = struct{}{}
 		var pats []*regexp.Regexp
+		skipDir2 := false
 		if strings.ContainsAny(name, "*?") {
 			pats = svc.allArns
+			// A wildcard that matches no real action (e.g. "s3:Frobni*")
+			// is already flagged by checkOne. Excluding it from direction
+			// 2 mirrors the unknown-action carve-out below: with no real
+			// expansion there's no meaningful "ARN format" to complain
+			// about. Wildcards that DO match at least one action stay in
+			// direction 2 — their allArns view is a legitimate constraint.
+			if !svc.matchesAny(name) {
+				skipDir2 = true
+			}
 		} else if pa, has := svc.arnsByAction[strings.ToLower(name)]; has && len(pa) > 0 {
 			pats = pa
 		} else {
@@ -468,7 +485,9 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			//   1. The action is unknown (typo). checkOne reports the
 			//      action separately; we use allArns so the unknown
 			//      action doesn't also drag a misleading "resource
-			//      doesn't match" error along with it.
+			//      doesn't match" error along with it. The action is also
+			//      excluded from direction 2 — a non-existent action has
+			//      no "ARN format" to complain about.
 			//
 			//   2. The action is known but the service reference lists
 			//      it with no Resources (e.g. iam:ListUsers,
@@ -477,10 +496,15 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			//      the AWS-documented "let users self-manage" pattern
 			//      pairs them with a concrete IAM-shaped Resource
 			//      ("arn:aws:iam::ACCOUNT:user/"). Validate against
-			//      allArns rather than the empty per-action set.
+			//      allArns rather than the empty per-action set, and
+			//      direction 2 still applies (a wrong-service ARN is
+			//      a real mistake worth surfacing).
 			pats = svc.allArns
+			if !svc.HasAction(name) {
+				skipDir2 = true
+			}
 		}
-		perAction = append(perAction, actionEntry{token: a, patterns: pats})
+		perAction = append(perAction, actionEntry{token: a, patterns: pats, skipDir2: skipDir2})
 	}
 	if !resolvedAny {
 		// Every action was malformed or referenced an unknown service. The
@@ -535,11 +559,12 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 
 	// Direction 2: every Action has at least one Resource it fits. Actions
 	// whose pattern set is empty (only possible with a service catalog that
-	// declares zero ARN formats — fake-test territory, not real AWS) are
+	// declares zero ARN formats — fake-test territory, not real AWS) or
+	// whose name doesn't actually exist in the catalog (skipDir2) are
 	// skipped to stay consistent with the "no info → don't double-flag"
 	// philosophy used by checkOne and the unknown-service path above.
 	for j, ae := range perAction {
-		if len(ae.patterns) == 0 || actionCovered[j] {
+		if len(ae.patterns) == 0 || ae.skipDir2 || actionCovered[j] {
 			continue
 		}
 		issues = append(issues, fmt.Sprintf(
