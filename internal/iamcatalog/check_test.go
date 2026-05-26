@@ -2,6 +2,8 @@ package iamcatalog_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1907,6 +1909,34 @@ func TestCheckPolicy_Resource_PerAction_MultipleStatements_IndexedSeparately(t *
 	assert.Contains(t, err.Error(), "Statement[0]")
 	assert.Contains(t, err.Error(), `action "s3:ListBucket"`)
 	assert.NotContains(t, err.Error(), "Statement[1]")
+}
+
+func TestCheckPolicy_Resource_PerAction_DuplicateActionTokens_EmitOneOrphanLine(t *testing.T) {
+	// Generated configs and copy-paste sometimes leave the same action token
+	// in an Action list twice — or twice in different casing, since IAM
+	// action names are case-insensitive. Direction 2 must emit one orphan
+	// line per distinct action, not one per occurrence.
+	c := withResources(t)
+	for _, actions := range [][]any{
+		{"s3:ListBucket", "s3:ListBucket"}, // identical spelling
+		{"s3:ListBucket", "s3:listbucket"}, // action-name case differs
+		{"s3:ListBucket", "S3:ListBucket"}, // service-prefix case differs
+	} {
+		t.Run(fmt.Sprint(actions...), func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action":   actions,
+						"Resource": "arn:aws:s3:::my-bucket/key", // orphans ListBucket
+					},
+				},
+			}
+			err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+			require.Error(t, err)
+			count := strings.Count(err.Error(), "has no resource that matches")
+			assert.Equal(t, 1, count, "expected one direction 2 line, got:\n%s", err.Error())
+		})
+	}
 }
 
 func TestCheckPolicy_Resource_PerAction_FullyCoveredPairs_ShortCircuit(t *testing.T) {

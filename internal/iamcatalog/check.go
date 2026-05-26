@@ -425,6 +425,11 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		patterns []*regexp.Regexp
 	}
 	var perAction []actionEntry
+	// De-duplicate by lowercased action token. IAM actions are case-
+	// insensitive, so ["s3:ListBucket", "s3:listbucket"] (or the same
+	// spelling twice) address the same action — without this guard direction
+	// 2 would emit one redundant "has no resource" line per duplicate.
+	seenAction := make(map[string]struct{})
 	resolvedAny := false
 	for _, a := range actions {
 		if a == "*" {
@@ -447,6 +452,11 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			return nil, err
 		}
 		resolvedAny = true
+		key := strings.ToLower(a)
+		if _, dup := seenAction[key]; dup {
+			continue
+		}
+		seenAction[key] = struct{}{}
 		var pats []*regexp.Regexp
 		if strings.ContainsAny(name, "*?") {
 			pats = svc.allArns
