@@ -2,6 +2,8 @@ package iamcatalog_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1691,6 +1693,469 @@ func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown action "NotARealAction"`)
 	assert.NotContains(t, err.Error(), "does not match", "valid s3 ARN should not be flagged when only the action name is wrong")
+}
+
+// Direction 2 — Action-side enforcement. Direction 1 (Resource → Action)
+// is exercised by the tests above; the cases below cover the mirror
+// requirement: each Action listed in a Statement must have at least one
+// Resource in that Statement whose ARN matches the action's templates.
+
+func TestCheckPolicy_Resource_PerAction_OrphanedAction_Flagged(t *testing.T) {
+	// The canonical mistake: s3:GetObject + s3:ListBucket together with only
+	// an object ARN. ListBucket operates on the bucket itself, so no Resource
+	// in the Statement matches its templates — it's silently orphaned.
+	// Strict mode names the orphan so the user knows whether to add a bucket
+	// ARN or drop ListBucket.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:GetObject", "s3:ListBucket"},
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `action "s3:ListBucket"`)
+	assert.Contains(t, err.Error(), "has no resource that matches its ARN format")
+	assert.Contains(t, err.Error(), "Statement[0]")
+	// GetObject does have a matching resource — it must not be flagged.
+	assert.NotContains(t, err.Error(), `action "s3:GetObject"`)
+}
+
+func TestCheckPolicy_Resource_PerAction_BareStarResource_CoversAllActions(t *testing.T) {
+	// A bare "*" Resource grants every action in the Statement — direction 2
+	// must short-circuit so the otherwise-orphaned action isn't flagged.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:GetObject", "s3:ListBucket"},
+				"Resource": "*",
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_PerAction_BareStarInsideList_CoversAllActions(t *testing.T) {
+	// "*" sitting alongside a concrete ARN inside the Resource list still
+	// covers every action — the catch-all wins even when the concrete entry
+	// only fits one of the listed actions.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:GetObject", "s3:ListBucket"},
+				"Resource": []any{"arn:aws:s3:::my-bucket/key", "*"},
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_PerAction_BareStarAction_SkipsCheck(t *testing.T) {
+	// Action="*" already bypasses checkResources entirely — direction 2 must
+	// follow the same skip even though the Resource is plainly nonsense.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "*",
+				"Resource": "arn:aws:s3:::my-bucket", // wrong for nothing in particular
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_PerAction_WildcardServicePrefix_SkipsCheck(t *testing.T) {
+	// "*:GetObject" can't be pinned to one service catalog, so the whole
+	// resource check skips. Direction 2 must skip alongside direction 1.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "*:GetObject",
+				"Resource": "arn:aws:s3:::my-bucket", // wrong shape — must not be flagged
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_PerAction_WildcardActionName_UsesServiceWideArns(t *testing.T) {
+	// "s3:*" widens to the full s3 ARN union. Even with a concrete bucket
+	// ARN that no per-action set would accept on its own, the wildcard's
+	// allArns view includes the bucket template, so the action is covered.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:*",
+				"Resource": "arn:aws:s3:::my-bucket",
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_PerAction_WildcardAlongsideOrphanAction_StillFlagsOrphan(t *testing.T) {
+	// "s3:*" alongside "s3:ListBucket" with only an object ARN. The
+	// wildcard pulls in allArns (object + bucket templates) so it's
+	// covered, but the concrete ListBucket action still constrains to the
+	// bucket template — which no Resource matches. ListBucket stays
+	// orphaned. Direction 2 must not let the wildcard's permissiveness
+	// hide the concrete mismatch.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:*", "s3:ListBucket"},
+				"Resource": "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `action "s3:ListBucket"`)
+	assert.NotContains(t, err.Error(), `action "s3:*"`)
+}
+
+func TestCheckPolicy_Resource_PerAction_MultipleOrphans_AllNamed(t *testing.T) {
+	// When two actions are orphaned, both must appear in the error so the
+	// user can fix the Statement in one pass rather than discovering each
+	// orphan one at a time.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:GetObject", "s3:ListBucket", "s3:PutBucketPolicy"},
+				"Resource": "arn:aws:s3:::my-bucket/key", // only object — both bucket-only actions orphan
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `action "s3:ListBucket"`)
+	assert.Contains(t, err.Error(), `action "s3:PutBucketPolicy"`)
+	assert.NotContains(t, err.Error(), `action "s3:GetObject"`)
+}
+
+func TestCheckPolicy_Resource_PerAction_NotActionStatement_Skipped(t *testing.T) {
+	// NotAction means "every IAM action except these," so the listed entries
+	// don't define a keyspace direction 2 can consult — the action-side check
+	// would otherwise falsely orphan a resource that's perfectly valid for
+	// one of the (unlisted, much larger) NotAction complement.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"NotAction": "s3:GetObject",
+				"Resource":  "arn:aws:s3:::my-bucket/key",
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_PerAction_UnknownServiceMixed_KnownStillEnforced(t *testing.T) {
+	// unknownsvc:Foo skips from the per-action set (checkOne reports it on
+	// its own line); s3:ListBucket is still subject to direction 2 and
+	// must be flagged when no matching Resource exists. The unknown
+	// service must not silently absorb the orphan check for the known one.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"unknownsvc:Foo", "s3:ListBucket"},
+				"Resource": "arn:aws:s3:::my-bucket/key", // object-only, ListBucket orphan
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown AWS service prefix")
+	assert.Contains(t, err.Error(), `action "s3:ListBucket" has no resource`)
+	// unknownsvc:Foo was skipped from the per-action set, so it must not
+	// pick up a direction 2 "has no resource" line on top of the unknown-
+	// service line. The substring `action "unknownsvc:Foo"` appears
+	// inside checkOne's unknown-service message ("...in action
+	// \"unknownsvc:Foo\""), so we anchor the negative assertion on the
+	// direction 2 phrasing instead.
+	assert.NotContains(t, err.Error(), `action "unknownsvc:Foo" has no resource`)
+}
+
+func TestCheckPolicy_Resource_PerAction_MultipleStatements_IndexedSeparately(t *testing.T) {
+	// Each Statement is evaluated independently, and the error must carry
+	// the Statement index so the user can locate which one to fix. The
+	// good Statement must not produce a direction 2 line at all.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:GetObject", "s3:ListBucket"},
+				"Resource": "arn:aws:s3:::my-bucket/key", // orphans ListBucket
+			},
+			map[string]any{
+				"Action":   "s3:GetObject",
+				"Resource": "arn:aws:s3:::other-bucket/key", // fine
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Statement[0]")
+	assert.Contains(t, err.Error(), `action "s3:ListBucket"`)
+	assert.NotContains(t, err.Error(), "Statement[1]")
+}
+
+func TestCheckPolicy_Resource_PerAction_UnknownAction_SkipsDir2(t *testing.T) {
+	// A typo'd non-wildcard action ("s3:NotARealAction") is already
+	// reported by checkOne as unknown. Direction 2 must NOT layer a
+	// second "has no resource that matches its ARN format" line on top:
+	// the action has no real ARN format in the catalog, so naming it as
+	// orphaned just confuses the user. The resource-side error from
+	// direction 1 stays, because the user-supplied ARN still demonstrably
+	// doesn't fit any s3 format.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:NotARealAction",
+				"Resource": "arn:aws:OTHERSVC:::foo", // doesn't match any s3 ARN format
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown action "NotARealAction"`)
+	assert.Contains(t, err.Error(), `resource "arn:aws:OTHERSVC:::foo"`)
+	assert.NotContains(t, err.Error(), `action "s3:NotARealAction" has no resource`,
+		"unknown actions must not also produce a direction 2 orphan line")
+}
+
+func TestCheckPolicy_Resource_PerAction_WildcardMatchingNothing_SkipsDir2(t *testing.T) {
+	// Mirror of UnknownAction_SkipsDir2 for wildcard names: "s3:Frobni*"
+	// matches no real action in the catalog and is already flagged by
+	// checkOne. Direction 2 must not pile on a "has no resource" line —
+	// there's no "ARN format" for a wildcard with no expansion. The
+	// resource-side message from direction 1 still stands.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:Frobni*",
+				"Resource": "arn:aws:OTHERSVC:::foo",
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "matches no actions")
+	assert.Contains(t, err.Error(), `resource "arn:aws:OTHERSVC:::foo"`)
+	assert.NotContains(t, err.Error(), `action "s3:Frobni*" has no resource`,
+		"wildcard with no matching action must not produce a direction 2 orphan line")
+}
+
+func TestCheckPolicy_Resource_PerAction_WildcardMatchingSomething_StillTriggersDir2(t *testing.T) {
+	// Counterpoint: a wildcard that DOES expand to real actions
+	// ("s3:Get*" — GetObject etc.) keeps direction 2 active. If the
+	// Resource doesn't fit any s3 ARN format, the action is legitimately
+	// orphaned and must be reported.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:Get*",
+				"Resource": "arn:aws:OTHERSVC:::foo",
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `action "s3:Get*" has no resource`)
+}
+
+func TestCheckPolicy_Resource_PerAction_UnknownActionWithValidArn_OnlyCheckOneFires(t *testing.T) {
+	// Sanity: when a typo'd action sits next to a Resource that DOES match
+	// the service's allArns, direction 1 stays quiet and direction 2 was
+	// already silent (actionCovered=true). Only checkOne should report.
+	// Equivalent to the existing UnknownAction_NoDoubleFlag test, but
+	// re-stated to lock in the relationship between skipDir2 and an
+	// actually-resolving resource.
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:NotARealAction",
+				"Resource": "arn:aws:s3:::my-bucket/key", // matches s3 object template
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown action "NotARealAction"`)
+	assert.NotContains(t, err.Error(), "does not match")
+	assert.NotContains(t, err.Error(), "has no resource")
+}
+
+func TestCheckPolicy_Resource_PerAction_KnownActionWithoutPerActionArns_StillTriggersDir2(t *testing.T) {
+	// Counterpoint to UnknownAction_SkipsDir2: when the action IS in the
+	// catalog but has no per-action Resources declared (e.g. the
+	// service-level ListAllThings pattern), skipDir2 stays off and a
+	// wrong-service ARN must still produce the direction 2 message.
+	// Without this, the skipDir2 carve-out would silently swallow real
+	// cross-service typos on service-level actions.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions: map[string][]string{
+				"ListAllThings": nil, // catalog-known, no Resources declared
+			},
+			resources: map[string][]string{
+				"thing": {"arn:${Partition}:svc:::${Name}"},
+			},
+		},
+	})
+	c := iamcatalog.New(fs.server.URL)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "svc:ListAllThings",
+				"Resource": "arn:aws:OTHERSVC:::main",
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	// Direction 1 still flags the resource (no allArns entry matches).
+	assert.Contains(t, err.Error(), `resource "arn:aws:OTHERSVC:::main"`)
+	// And direction 2 fires for the known service-level action.
+	assert.Contains(t, err.Error(), `action "svc:ListAllThings" has no resource`)
+}
+
+func TestCheckPolicy_Resource_PerAction_DuplicateActionTokens_EmitOneOrphanLine(t *testing.T) {
+	// Generated configs and copy-paste sometimes leave the same action token
+	// in an Action list twice — or twice in different casing, since IAM
+	// action names are case-insensitive. Direction 2 must emit one orphan
+	// line per distinct action, not one per occurrence.
+	c := withResources(t)
+	for _, actions := range [][]any{
+		{"s3:ListBucket", "s3:ListBucket"}, // identical spelling
+		{"s3:ListBucket", "s3:listbucket"}, // action-name case differs
+		{"s3:ListBucket", "S3:ListBucket"}, // service-prefix case differs
+	} {
+		t.Run(fmt.Sprint(actions...), func(t *testing.T) {
+			policy := map[string]any{
+				"Statement": []any{
+					map[string]any{
+						"Action":   actions,
+						"Resource": "arn:aws:s3:::my-bucket/key", // orphans ListBucket
+					},
+				},
+			}
+			err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+			require.Error(t, err)
+			count := strings.Count(err.Error(), "has no resource that matches")
+			assert.Equal(t, 1, count, "expected one direction 2 line, got:\n%s", err.Error())
+		})
+	}
+}
+
+func TestCheckPolicy_Resource_PerAction_FullyCoveredPairs_ShortCircuit(t *testing.T) {
+	// When every Resource and every Action already has its "matched" bit
+	// set, subsequent pair iterations must skip the inner regex work — the
+	// optimization that lets the matching loop decay toward the old pooled-
+	// patterns cost in well-formed policies. Two bucket-only actions paired
+	// with two bucket ARNs exercises the late-iteration "both already true"
+	// branch (the last pair sees resourceMatched and actionCovered both
+	// already set from earlier pairs).
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   []any{"s3:ListBucket", "s3:PutBucketPolicy"},
+				"Resource": []any{"arn:aws:s3:::bucket-one", "arn:aws:s3:::bucket-two"},
+			},
+		},
+	}
+	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+}
+
+func TestCheckPolicy_Resource_PerAction_ServiceWithoutArns_SkipsActionCheck(t *testing.T) {
+	// Defensive: a service whose catalog declares zero ARN templates
+	// anywhere yields an empty per-action pattern set. Without info to
+	// enforce against, direction 2 must skip — matching the same
+	// "no info → don't double-flag" philosophy checkOne already uses
+	// for unknown actions. A real AWS catalog won't produce this shape,
+	// but the validator must not flag the action if it ever did.
+	//
+	// Two sub-cases exercise the skip from different angles:
+	//   - bare "*" Resource: direction 2 short-circuits before reaching
+	//     the empty-patterns guard at all (hasBareStar wins).
+	//   - concrete Resource: direction 1 flags it ("no ARN format"), but
+	//     direction 2 hits the empty-patterns continue and the action
+	//     must NOT additionally appear in the error.
+	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
+		"svc": {
+			actions: map[string][]string{"DoThing": nil},
+			// no actionResources, no resources → allArns and per-action ARNs
+			// are both empty.
+		},
+	})
+	c := iamcatalog.New(fs.server.URL)
+
+	t.Run("bare star resource", func(t *testing.T) {
+		policy := map[string]any{
+			"Statement": []any{
+				map[string]any{
+					"Action":   "svc:DoThing",
+					"Resource": "*",
+				},
+			},
+		}
+		require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
+	})
+
+	t.Run("concrete resource — direction 2 still skips the empty action", func(t *testing.T) {
+		policy := map[string]any{
+			"Statement": []any{
+				map[string]any{
+					"Action":   "svc:DoThing",
+					"Resource": "arn:aws:svc:::anything",
+				},
+			},
+		}
+		err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+		// Direction 1 flags the resource (no pattern to match against).
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `resource "arn:aws:svc:::anything"`)
+		// Direction 2 must NOT also flag the action — len(patterns)==0
+		// short-circuits the per-action check.
+		assert.NotContains(t, err.Error(), `action "svc:DoThing" has no resource`)
+	})
+}
+
+func TestCheckPolicy_Resource_PerAction_SingleAction_BothDirectionsReportConflict(t *testing.T) {
+	// When the only action and the only resource conflict, both directions
+	// detect the same mismatch from opposite angles: direction 1 names the
+	// resource, direction 2 names the action. The wording is intentionally
+	// distinct — readers should see both perspectives, not a single line
+	// that hides which side of the pair is "wrong."
+	c := withResources(t)
+	policy := map[string]any{
+		"Statement": []any{
+			map[string]any{
+				"Action":   "s3:GetObject",
+				"Resource": "arn:aws:s3:::my-bucket", // bucket on object-only action
+			},
+		},
+	}
+	err := iamcatalog.CheckPolicy(context.Background(), c, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resource "arn:aws:s3:::my-bucket" does not match`)
+	assert.Contains(t, err.Error(), `action "s3:GetObject" has no resource`)
 }
 
 // withColonExtendedTemplates wires up a service whose long template extends
