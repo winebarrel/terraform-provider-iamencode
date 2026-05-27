@@ -57,16 +57,7 @@ func TestPolicyStrictFunction_OK_HCL(t *testing.T) {
 				]
 			})
 		}
-	`, `{
-  "Statement": [
-    {
-      "Action": "s3:GetObject",
-      "Effect": "Allow",
-      "Resource": "*"
-    }
-  ],
-  "Version": "2012-10-17"
-}`)
+	`, `{"Statement":[{"Action":"s3:GetObject","Effect":"Allow","Resource":"*"}],"Version":"2012-10-17"}`)
 }
 
 func TestPolicyStrictFunction_Err_HCL_UnknownAction(t *testing.T) {

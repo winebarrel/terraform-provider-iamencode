@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.0] - 2026-05-27
+
+- Revert the 1.7.0 default-output change. `policy` / `policy_strict` produce minified one-line JSON again (via `json.Marshal`), matching Terraform's built-in `jsonencode` and the `minified_json` attribute of `aws_iam_policy_document`. The indented form 1.7.0 introduced turned out to be the outlier in the Terraform function ecosystem — `jsonencode` and friends all emit compact output by default. Users who want indented JSON should `jsondecode(...)` then re-format externally.
+
 ## [1.7.0] - 2026-05-27
 
 - `policy` / `policy_strict`: default output is now indented JSON (2-space indent), matching the `json` attribute of `aws_iam_policy_document`. Previously the output was compact one-line JSON via `json.Marshal`; this release switches to `json.MarshalIndent`. Breaking change for code that string-compares the returned value to a hand-written minified literal — update the expected value to match the indented form.
