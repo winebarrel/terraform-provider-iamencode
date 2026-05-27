@@ -51,7 +51,16 @@ func TestPolicyFunction_OK_Smoke(t *testing.T) {
 				]
 			})
 		}
-	`, `{"Statement":[{"Action":"s3:GetObject","Effect":"Allow","Resource":"*"}],"Version":"2012-10-17"}`)
+	`, `{
+  "Statement": [
+    {
+      "Action": "s3:GetObject",
+      "Effect": "Allow",
+      "Resource": "*"
+    }
+  ],
+  "Version": "2012-10-17"
+}`)
 }
 
 // Verifies that attrValueToNative correctly converts every Terraform type the
@@ -74,7 +83,39 @@ func TestPolicyFunction_OK_TypeConversion(t *testing.T) {
 				}]
 			})
 		}
-	`, `{"Statement":[{"Action":["s3:GetObject","s3:PutObject"],"Condition":{"Bool":{"aws:SecureTransport":true},"NumericLessThan":{"s3:max-keys":100},"StringEquals":{"aws:PrincipalTag/env":["prod","staging"]}},"Effect":"Allow","Principal":{"Service":["lambda.amazonaws.com","ec2.amazonaws.com"]},"Resource":"*"}],"Version":"2012-10-17"}`)
+	`, `{
+  "Statement": [
+    {
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": true
+        },
+        "NumericLessThan": {
+          "s3:max-keys": 100
+        },
+        "StringEquals": {
+          "aws:PrincipalTag/env": [
+            "prod",
+            "staging"
+          ]
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "Service": [
+          "lambda.amazonaws.com",
+          "ec2.amazonaws.com"
+        ]
+      },
+      "Resource": "*"
+    }
+  ],
+  "Version": "2012-10-17"
+}`)
 }
 
 // Verifies that list(string) (e.g. from tolist / for_each / chunklist) is
@@ -92,7 +133,19 @@ func TestPolicyFunction_OK_ListValue(t *testing.T) {
 				}]
 			})
 		}
-	`, `{"Statement":[{"Action":"s3:GetObject","Effect":"Allow","Resource":["arn:aws:s3:::a","arn:aws:s3:::b"]}],"Version":"2012-10-17"}`)
+	`, `{
+  "Statement": [
+    {
+      "Action": "s3:GetObject",
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::a",
+        "arn:aws:s3:::b"
+      ]
+    }
+  ],
+  "Version": "2012-10-17"
+}`)
 }
 
 // Verifies that set(string) (e.g. from toset) is encoded correctly.
@@ -108,7 +161,18 @@ func TestPolicyFunction_OK_SetValue(t *testing.T) {
 				}]
 			})
 		}
-	`, `{"Statement":[{"Action":["s3:GetObject"],"Effect":"Allow","Resource":"*"}],"Version":"2012-10-17"}`)
+	`, `{
+  "Statement": [
+    {
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Effect": "Allow",
+      "Resource": "*"
+    }
+  ],
+  "Version": "2012-10-17"
+}`)
 }
 
 // Verifies that map(string) (e.g. from tomap or a for expression) is encoded
@@ -128,7 +192,21 @@ func TestPolicyFunction_OK_MapValue(t *testing.T) {
 				}]
 			})
 		}
-	`, `{"Statement":[{"Action":"s3:GetObject","Condition":{"StringEquals":{"aws:PrincipalTag/env":"prod"}},"Effect":"Allow","Resource":"*"}],"Version":"2012-10-17"}`)
+	`, `{
+  "Statement": [
+    {
+      "Action": "s3:GetObject",
+      "Condition": {
+        "StringEquals": {
+          "aws:PrincipalTag/env": "prod"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": "*"
+    }
+  ],
+  "Version": "2012-10-17"
+}`)
 }
 
 // Verifies a single Statement object (not array) round-trips correctly.
@@ -140,7 +218,14 @@ func TestPolicyFunction_OK_StatementAsObject(t *testing.T) {
 				Statement = { Effect = "Allow", Action = "s3:*", Resource = "*" }
 			})
 		}
-	`, `{"Statement":{"Action":"s3:*","Effect":"Allow","Resource":"*"},"Version":"2012-10-17"}`)
+	`, `{
+  "Statement": {
+    "Action": "s3:*",
+    "Effect": "Allow",
+    "Resource": "*"
+  },
+  "Version": "2012-10-17"
+}`)
 }
 
 // Verifies that a schema validation error surfaces through the function.

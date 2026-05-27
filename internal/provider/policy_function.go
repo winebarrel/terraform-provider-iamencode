@@ -59,7 +59,7 @@ func (r PolicyFunction) Run(ctx context.Context, req function.RunRequest, resp *
 		return
 	}
 
-	encoded, err := json.Marshal(native)
+	encoded, err := json.MarshalIndent(native, "", "  ")
 	if err != nil {
 		// Float64 from a big.Float can overflow to ±Inf, which json refuses.
 		resp.Error = function.ConcatFuncErrors(resp.Error, function.NewArgumentFuncError(0, fmt.Sprintf("encode IAM policy: %v", err)))

@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.7.0] - 2026-05-27
+
+- `policy` / `policy_strict`: default output is now indented JSON (2-space indent), matching the `json` attribute of `aws_iam_policy_document`. Previously the output was compact one-line JSON via `json.Marshal`; this release switches to `json.MarshalIndent`. Breaking change for code that string-compares the returned value to a hand-written minified literal — update the expected value to match the indented form.
+
 ## [1.6.0] - 2026-05-26
 
 - `policy_strict`: flag Actions whose ARN format(s) don't match any Resource in the Statement. A common mistake — `["s3:GetObject", "s3:ListBucket"]` paired with only `arn:aws:s3:::bucket/key` — now reports `s3:ListBucket` as orphaned, since its bucket-level template can't accept an object ARN and the action would silently never apply at evaluation time. The existing reverse-direction check (Resource that fits no action) is unchanged.
