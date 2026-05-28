@@ -71,21 +71,21 @@ func (rm resourceMatcher) match(template *regexp.Regexp) bool {
 	return progsIntersect(tmplProg, rm.userProg)
 }
 
-// matchesARN is a one-shot convenience wrapper around resourceMatcher,
-// useful when the caller has a single (template, value) pair. Hot
-// callers that test one value against many templates should build a
-// resourceMatcher once and reuse it via match instead — that avoids
-// re-parsing the user wildcard pattern per template.
+// matchesARN is a one-shot wrapper around resourceMatcher, useful when the
+// caller has a single (template, value) pair. Hot callers that test one value
+// against many templates should build a resourceMatcher once and reuse it via
+// match instead, which avoids re-parsing the user wildcard pattern per
+// template.
 func matchesARN(template *regexp.Regexp, value string) bool {
 	return newResourceMatcher(value).match(template)
 }
 
 // iamWildcardToRegex turns an IAM-wildcard string into an anchored regex
-// source: '*' → ".*" (any chars except newline, ':' and '/' included),
-// '?' → "." (exactly one char, also newline-excluding), other runes
-// QuoteMeta'd. Newline exclusion mirrors Go's default Perl flags — both
-// sides of the intersection use the same convention, and real ARN values
-// never contain newlines, so the omission is safe.
+// source: '*' becomes ".*" (any chars except newline, including ':' and '/'),
+// '?' becomes "." (exactly one char, also newline-excluding), other runes are
+// QuoteMeta'd. Newline exclusion mirrors Go's default Perl flags; both sides
+// of the intersection use the same convention, and real ARN values never
+// contain newlines, so the omission is safe.
 func iamWildcardToRegex(s string) string {
 	var b strings.Builder
 	b.WriteByte('^')
@@ -103,17 +103,17 @@ func iamWildcardToRegex(s string) string {
 	return b.String()
 }
 
-// regexIntersects reports whether two regex source strings share any
-// matching string — i.e. whether L(tmplSrc) ∩ L(userSrc) is non-empty.
+// regexIntersects reports whether two regex source strings share any matching
+// string, i.e. whether the languages L(tmplSrc) and L(userSrc) overlap.
 // Returns false on parse/compile errors (treated as "cannot prove
 // intersection").
 //
-// Only the template side is memoized. Template sources repeat for every
-// ARN tested in a service, so caching them turns the inner loop of
-// checkResources into a hash lookup. User patterns are NOT cached: their
-// source space is unbounded (configs can list arbitrarily many distinct
-// wildcarded Resource values), and sync.Map has no eviction — caching
-// them would let a config bloat process memory.
+// Only the template side is memoized. Template sources repeat for every ARN
+// tested in a service, so caching them turns the inner loop of checkResources
+// into a hash lookup. User patterns are not cached: their source space is
+// unbounded (configs can list arbitrarily many distinct wildcarded Resource
+// values), and sync.Map has no eviction, so caching them would let a config
+// bloat process memory.
 func regexIntersects(tmplSrc, userSrc string) bool {
 	pa, err := cachedTemplateProg(tmplSrc)
 	if err != nil {
@@ -126,9 +126,9 @@ func regexIntersects(tmplSrc, userSrc string) bool {
 	return progsIntersect(pa, pb)
 }
 
-// templateProgCache memoizes template regex source → *syntax.Prog.
+// templateProgCache memoizes template regex source to *syntax.Prog.
 // syntax.Prog is read-only after compile, so sharing a single instance
-// across goroutines (and across the resources × patterns loop in
+// across goroutines (and across the resources-by-patterns loop in
 // checkResources) is safe.
 var templateProgCache sync.Map // map[string]progCacheEntry
 
@@ -160,21 +160,20 @@ func compileSyntaxProg(src string) (*syntax.Prog, error) {
 type pcPair struct{ a, b uint32 }
 
 // maxProductStates caps the size of the BFS visit set. The product state
-// space is O(|progA|·|progB|); a malicious or accidentally large user
-// pattern could in theory drive it far past anything we'd see in practice.
-// When the cap is hit we bail out and return false (fail closed).
+// space is O(|progA|*|progB|); a malicious or accidentally large user pattern
+// could in theory drive it far past anything seen in practice. When the cap
+// is hit we bail out and return false (fail closed).
 const maxProductStates = 100_000
 
 // progsIntersect runs BFS over the product NFA. Returning true means some
-// input string drives both programs to their accept (InstMatch) state at
-// the same time; that string is a witness for L(pa) ∩ L(pb).
+// input string drives both programs to their accept (InstMatch) state at the
+// same time; that string is a witness that L(pa) and L(pb) overlap.
 //
-// InstEmptyWidth instructions (^, $, \b, \B) are treated as plain
-// epsilons. The regexes the validator feeds in are always shaped
-// "^...$", so the anchors fire at the right positions naturally — start
-// when BFS begins, end when both sides have consumed their input — and
-// approximating them as epsilon does not introduce false positives in
-// practice.
+// InstEmptyWidth instructions (^, $, \b, \B) are treated as plain epsilons.
+// The regexes the validator feeds in are always shaped "^...$", so the
+// anchors fire at the right positions naturally (start when BFS begins, end
+// when both sides have consumed their input), and approximating them as
+// epsilon does not introduce false positives in practice.
 func progsIntersect(pa, pb *syntax.Prog) bool {
 	seen := make(map[pcPair]struct{})
 	queue := []pcPair{{uint32(pa.Start), uint32(pb.Start)}}
@@ -236,8 +235,8 @@ func isCharOp(op syntax.InstOp) bool {
 }
 
 // runesOverlap reports whether two char-consuming instructions accept at
-// least one common rune. Hot path inside the BFS — uses iterRanges to
-// avoid the per-call slice allocations the previous "acceptedRanges
+// least one common rune. On the hot path inside the BFS, it uses iterRanges
+// to avoid the per-call slice allocations the previous "acceptedRanges
 // returning [][2]rune" shape produced.
 func runesOverlap(ia, ib syntax.Inst) bool {
 	return iterRanges(ia, func(lo1, hi1 rune) bool {
@@ -274,9 +273,9 @@ func iterRanges(i syntax.Inst, fn func(lo, hi rune) bool) bool {
 	return false
 }
 
-// acceptedRanges is the test-friendly view of iterRanges — it returns
-// the same ranges as a slice. Not used on the hot path; kept so the
-// behavior of the underlying rune dispatch can be asserted directly.
+// acceptedRanges is the test-friendly view of iterRanges: it returns the
+// same ranges as a slice. Not used on the hot path; kept so the behavior of
+// the underlying rune dispatch can be asserted directly.
 func acceptedRanges(i syntax.Inst) [][2]rune {
 	var ranges [][2]rune
 	iterRanges(i, func(lo, hi rune) bool {

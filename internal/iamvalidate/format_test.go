@@ -68,7 +68,7 @@ func TestValidate_MissingRequired_PointsAtObject_AllLinesMarked(t *testing.T) {
 	out := err.Error()
 	assert.Contains(t, out, `Statement[0]: missing required property "Effect"`)
 
-	// The failing value is a multi-line object — every line of the object
+	// The failing value is a multi-line object, so every line of the object
 	// (the opening "{", the property lines, and the closing "}") gets a ">"
 	// marker, and no caret line should appear.
 	gutters := 0
@@ -184,7 +184,7 @@ func TestValidate_StringWithEmbeddedNewline_StillSingleLineInSnippet(t *testing.
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
-				"Effect":   "line1\nline2", // not "Allow"/"Deny" → enum violation
+				"Effect":   "line1\nline2", // not "Allow"/"Deny", gives an enum violation
 				"Action":   "s3:*",
 				"Resource": "*",
 			},
@@ -222,7 +222,7 @@ func TestValidate_ConditionValue_Caret(t *testing.T) {
 	require.Error(t, err)
 
 	out := err.Error()
-	// Either path-name failure or propertyNames failure — both name the bad operator.
+	// Either path-name failure or propertyNames failure; both name the bad operator.
 	assert.Contains(t, out, "NotAnOperator")
 }
 

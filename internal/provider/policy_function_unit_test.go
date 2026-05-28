@@ -16,7 +16,7 @@ import (
 )
 
 // fakeAttrValue is an attr.Value that doesn't match any case in
-// attrValueToNative — used to cover the unsupported-type error branch.
+// attrValueToNative, used to cover the unsupported-type error branch.
 type fakeAttrValue struct{}
 
 func (fakeAttrValue) Type(context.Context) attr.Type { return nil }
@@ -121,7 +121,7 @@ func TestRun_NoArguments(t *testing.T) {
 }
 
 // HCL lets users write huge literals like 1e1000. big.Float represents those
-// faithfully, but Float64() collapses them to ±Inf, which json refuses. The
+// faithfully, but Float64() collapses them to +/-Inf, which json refuses. The
 // function must surface that as a function error rather than silently emit
 // truncated/empty output.
 func TestRun_MarshalFailsOnInfinityNumber(t *testing.T) {

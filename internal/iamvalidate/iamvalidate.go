@@ -51,14 +51,14 @@ func Validate(v any) error {
 	return checkDuplicateSids(v)
 }
 
-// checkDuplicateSids must only be called after schema validation succeeds —
+// checkDuplicateSids must only be called after schema validation succeeds, so
 // the input shape (map at the root, statements being either an object or an
 // array of objects) is assumed.
 func checkDuplicateSids(v any) error {
 	obj := v.(map[string]any)
 	arr, ok := obj["Statement"].([]any)
 	if !ok {
-		return nil // single statement object — no possibility of duplicates
+		return nil // single statement object: no possibility of duplicates
 	}
 	seen := make(map[string]int, len(arr))
 	for i, st := range arr {

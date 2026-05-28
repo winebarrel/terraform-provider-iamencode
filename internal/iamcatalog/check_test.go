@@ -60,10 +60,10 @@ func TestCheckPolicy_UnknownAction(t *testing.T) {
 }
 
 func TestCheckPolicy_BareStarAction_Skipped(t *testing.T) {
-	// The bare "*" is a universal wildcard — every IAM action across every
-	// service. We can't usefully validate it against any one service
-	// catalog, so it passes without lookup. Wildcard *names* (like "s3:*"
-	// or "s3:Get*") are now expanded — see TestCheckPolicy_WildcardName_*.
+	// The bare "*" is a universal wildcard covering every IAM action across
+	// every service. It can't be validated against any one service catalog,
+	// so it passes without lookup. Wildcard names (like "s3:*" or "s3:Get*")
+	// are expanded; see TestCheckPolicy_WildcardName_*.
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	policy := map[string]any{
 		"Statement": []any{
@@ -100,7 +100,7 @@ func TestCheckPolicy_WildcardName_NoMatch_Flagged(t *testing.T) {
 }
 
 func TestCheckPolicy_WildcardName_SingleCharMatcher(t *testing.T) {
-	// "?" matches exactly one character — "G?tObject" should hit GetObject.
+	// "?" matches exactly one character, so "G?tObject" should hit GetObject.
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	policy := map[string]any{
 		"Statement": []any{
@@ -123,9 +123,9 @@ func TestCheckPolicy_WildcardName_BareStar(t *testing.T) {
 }
 
 func TestCheckPolicy_WildcardName_EmptyService_Flagged(t *testing.T) {
-	// Edge case: a service that has zero actions — any non-trivial wildcard
-	// pattern matches nothing. (A real AWS service won't have zero actions,
-	// but the helper handles it gracefully rather than panicking.)
+	// Edge case: a service with zero actions means any non-trivial wildcard
+	// matches nothing. A real AWS service won't have zero actions, but the
+	// helper must handle it gracefully rather than panicking.
 	c := newFakeCatalog(t, map[string][]string{"s3": {}})
 	policy := map[string]any{
 		"Statement": []any{
@@ -138,9 +138,9 @@ func TestCheckPolicy_WildcardName_EmptyService_Flagged(t *testing.T) {
 }
 
 func TestCheckPolicy_WildcardServicePrefix_StillSkipped(t *testing.T) {
-	// A wildcard in the *service* prefix can't be expanded without fetching
-	// every service catalog (hundreds of services). Keep skipping silently
-	// — and not just for "*", but also for "?" (the other IAM wildcard).
+	// A wildcard in the service prefix can't be expanded without fetching
+	// every service catalog (hundreds of services). Skip silently, not just
+	// for "*" but also for "?" (the other IAM wildcard).
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	for _, a := range []string{"*:GetObject", "s*:GetObject", "s?:GetObject", "?3:GetObject"} {
 		t.Run(a, func(t *testing.T) {
@@ -209,7 +209,7 @@ func TestCheckPolicy_NetworkFailure_SurfacesError(t *testing.T) {
 
 func TestCheckPolicy_NilCatalog_Skips(t *testing.T) {
 	// Defensive: a zero-value PolicyStrictFunction or a caller that forgot to
-	// inject a catalog must not panic. nil is treated as "unavailable" → skip.
+	// inject a catalog must not panic. nil is treated as "unavailable", so skip.
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{"Action": "totallyfake:Action"},
@@ -220,14 +220,14 @@ func TestCheckPolicy_NilCatalog_Skips(t *testing.T) {
 
 func TestCheckPolicy_MalformedAction(t *testing.T) {
 	// The JSON Schema only requires Action to be a string, so it lets these
-	// through. Strict mode must catch them — that's the whole point.
+	// through. Strict mode must catch them.
 	c := newFakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	cases := []string{
 		"GetObject",  // no colon
 		"s3:",        // empty action
 		":GetObject", // empty prefix
 		"",           // empty string
-		"s3:*:foo",   // multiple colons — must not slip past via the wildcard branch
+		"s3:*:foo",   // multiple colons, must not slip past via the wildcard branch
 		"s3:a:b",     // multiple colons, no wildcard
 	}
 	for _, a := range cases {
@@ -286,8 +286,8 @@ func TestCheckPolicy_ConditionKey_Valid(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_NotValidForAction(t *testing.T) {
-	// s3:prefix is meaningful for ListBucket, but not for GetObject — exactly
-	// the kind of typo policy_strict is designed to surface.
+	// s3:prefix is meaningful for ListBucket but not for GetObject, which is
+	// exactly the kind of typo policy_strict is designed to surface.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -349,7 +349,7 @@ func TestCheckPolicy_ConditionKey_UnknownService_FlagsBoth(t *testing.T) {
 
 func TestCheckPolicy_ConditionKey_WildcardActionFallsBackToServiceKeys(t *testing.T) {
 	// s3:* doesn't narrow to one action, so we accept any key the s3 service
-	// declares anywhere — including s3:prefix.
+	// declares anywhere, including s3:prefix.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -366,7 +366,7 @@ func TestCheckPolicy_ConditionKey_WildcardActionFallsBackToServiceKeys(t *testin
 
 func TestCheckPolicy_ConditionKey_BareStarActionSkipsCheck(t *testing.T) {
 	// Action="*" spans every service; we can't tell what keys are valid, so
-	// don't flag anything — degrade silently.
+	// don't flag anything. Degrade silently.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -382,10 +382,10 @@ func TestCheckPolicy_ConditionKey_BareStarActionSkipsCheck(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_NetworkFailure_FromCheckConditionsPath(t *testing.T) {
-	// Wildcard action names skip checkOne's Lookup, so the first time the
-	// catalog is consulted for this prefix is inside checkConditions. If
-	// the catalog is unreachable that error must propagate out of
-	// CheckPolicy — exercising the err branch in checkConditions itself.
+	// Wildcard action names skip checkOne's Lookup, so the first catalog
+	// call for this prefix happens inside checkConditions. If the catalog
+	// is unreachable that error must propagate out of CheckPolicy, exercising
+	// the err branch in checkConditions itself.
 	c := iamcatalog.New("http://127.0.0.1:1")
 	policy := map[string]any{
 		"Statement": []any{
@@ -483,7 +483,7 @@ func TestCheckPolicy_ConditionKey_MultipleServices_UnionsKeys(t *testing.T) {
 	}
 	require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 
-	// Same actions, but one key belongs to neither service — flagged.
+	// Same actions, but one key belongs to neither service: flagged.
 	policy["Statement"].([]any)[0].(map[string]any)["Condition"] = map[string]any{
 		"StringEquals": map[string]any{"iam:PassedToService": "lambda.amazonaws.com"},
 	}
@@ -510,9 +510,9 @@ func TestCheckPolicy_ConditionKey_MultipleActions_UnionsKeys(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_WildcardServicePrefixSkipsCheck(t *testing.T) {
-	// "*:GetObject" is a wildcard service — checkOne accepts it (wildcards
-	// are out of scope) and checkConditions bails on the condition key
-	// because we can't tell what service's keyspace to consult.
+	// "*:GetObject" has a wildcard service prefix. checkOne accepts it since
+	// wildcards are out of scope, and checkConditions bails on the condition
+	// key because we can't tell what service's keyspace to consult.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -603,10 +603,10 @@ func TestCheckPolicy_ConditionKey_OIDCAcceptedForWebIdentity(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_OIDCRejectedWithoutWebIdentity(t *testing.T) {
-	// Without an AssumeRoleWithWebIdentity action in the statement the
-	// OIDC carve-out doesn't apply — "<hostname>:<key>" remains an
-	// unknown key and is flagged. (TagSession alone is a co-listed sts
-	// action that doesn't itself drive OIDC federation.)
+	// Without an AssumeRoleWithWebIdentity action in the statement the OIDC
+	// carve-out doesn't apply, so "<hostname>:<key>" remains an unknown key
+	// and is flagged. (TagSession alone is a co-listed sts action that
+	// doesn't itself drive OIDC federation.)
 	c := withStsForOIDC(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -626,10 +626,10 @@ func TestCheckPolicy_ConditionKey_OIDCRejectedWithoutWebIdentity(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_OIDCRequiresDottedHostnamePrefix(t *testing.T) {
-	// The carve-out only applies to keys whose prefix looks like a
-	// hostname (contains a '.'). A typo'd non-hostname key like
-	// "tokenhost:sub" still goes through the strict catalog check and
-	// gets flagged — otherwise the OIDC fix would mask real mistakes.
+	// The carve-out only applies to keys whose prefix looks like a hostname
+	// (contains a '.'). A non-hostname key like "tokenhost:sub" still goes
+	// through the strict catalog check and gets flagged; otherwise the OIDC
+	// fix would mask real mistakes.
 	c := withStsForOIDC(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -655,7 +655,7 @@ func TestIsOIDCConditionKey(t *testing.T) {
 		in   string
 		want bool
 	}{
-		// Happy path — real OIDC issuer hostnames.
+		// Happy path: real OIDC issuer hostnames.
 		{"oidc.example.com:sub", true},
 		{"oidc.example.com:aud", true},
 		{"token.actions.githubusercontent.com:sub", true},
@@ -665,7 +665,7 @@ func TestIsOIDCConditionKey(t *testing.T) {
 		// Hyphen inside labels is fine.
 		{"my-oidc.example-co.com:sub", true},
 
-		// Not OIDC — single-label / no dot. Falls through to catalog check.
+		// Not OIDC: single-label, no dot. Falls through to catalog check.
 		{"sts:RoleSessionName", false},
 		{"saml:aud", false},
 		{"localhost:sub", false},
@@ -676,7 +676,7 @@ func TestIsOIDCConditionKey(t *testing.T) {
 		{"oidc.example.com", false},
 		{"", false},
 
-		// Multi-colon — single-colon rule.
+		// Multi-colon: single-colon rule.
 		{"oidc.example.com:sub:extra", false},
 		{"a.b:c:d", false},
 
@@ -736,10 +736,9 @@ func TestCheckPolicy_ConditionKey_OIDCAcceptedForWildcardActions(t *testing.T) {
 
 func TestCheckPolicy_ConditionKey_OIDCNotTriggeredByOtherServiceWildcards(t *testing.T) {
 	// A wildcard from an unrelated service must not turn on the OIDC
-	// carve-out — "lambda:Invoke*" matches a real lambda action and
-	// otherwise validates fine, but it doesn't cover
-	// sts:AssumeRoleWithWebIdentity, so the OIDC hostname:keyname must
-	// still be flagged.
+	// carve-out. "lambda:Invoke*" matches a real lambda action and validates
+	// fine, but it doesn't cover sts:AssumeRoleWithWebIdentity, so the OIDC
+	// hostname:keyname must still be flagged.
 	c := withStsForOIDC(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -797,9 +796,9 @@ func TestCheckPolicy_ConditionKey_PlaceholderColonForm_Allowed(t *testing.T) {
 	// The canonical KMS shape: a real policy instantiates
 	// kms:EncryptionContext:${EncryptionContextKey} as
 	// kms:EncryptionContext:<some-user-defined-name>. The strict check used
-	// to flag this as an unknown key — the catalog only stores the templated
-	// form. The new prefix-pattern path accepts any value with the declared
-	// prefix.
+	// to flag this as an unknown key because the catalog only stores the
+	// templated form. The prefix-pattern path accepts any value with the
+	// declared prefix.
 	c := withPlaceholderKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -923,10 +922,10 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_TemplateLiteral_Rejected(t *tes
 	// A user who copy-pastes the AWS docs example verbatim ends up writing
 	// the placeholder template ("${EncryptionContextKey}") as the literal
 	// tail of the condition key. IAM doesn't expand "${...}" in condition
-	// keys, so this never matches anything at evaluation time — it's
-	// exactly the kind of typo strict mode exists to surface. The prefix
-	// path must NOT silently accept it just because the leading bytes
-	// agree with the declared prefix.
+	// keys, so this never matches anything at evaluation time. It's exactly
+	// the kind of typo strict mode exists to surface. The prefix path must
+	// NOT silently accept it just because the leading bytes agree with the
+	// declared prefix.
 	c := withPlaceholderKeys(t)
 	cases := []string{
 		"kms:EncryptionContext:${EncryptionContextKey}", // verbatim docs paste
@@ -975,7 +974,7 @@ func TestCheckPolicy_ConditionKey_PlaceholderKey_LiteralDollarInValue_Accepted(t
 
 func TestCheckPolicy_ConditionKey_PlaceholderKey_WildcardActionFallback(t *testing.T) {
 	// "kms:*" doesn't narrow to one action, so we accept any condition key
-	// the service declares anywhere — placeholder prefixes included.
+	// the service declares anywhere, placeholder prefixes included.
 	c := withPlaceholderKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1085,8 +1084,8 @@ func TestCheckPolicy_ConditionType_OperatorMatchesKeyType(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionType_OperatorMismatch_Flagged(t *testing.T) {
-	// s3:max-keys is Numeric in the catalog; StringEquals expects a String
-	// key — this is a real mistake we want to surface.
+	// s3:max-keys is Numeric in the catalog, but StringEquals expects a String
+	// key. This is a real mistake we want to surface.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1104,9 +1103,9 @@ func TestCheckPolicy_ConditionType_OperatorMismatch_Flagged(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionType_OperatorModifiersStripped(t *testing.T) {
-	// ForAllValues:/ForAnyValue: prefix and IfExists suffix don't change
-	// the operator's expected type. The check should normalize them away
-	// before looking up the type.
+	// ForAllValues:/ForAnyValue: prefix and IfExists suffix don't change the
+	// operator's expected type. The check normalizes them away before the
+	// type lookup.
 	c := withConditionKeys(t)
 	cases := []string{
 		"ForAllValues:StringEquals",
@@ -1132,8 +1131,8 @@ func TestCheckPolicy_ConditionType_OperatorModifiersStripped(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionType_NullOperator_AcceptsAnyType(t *testing.T) {
-	// "Null" tests for the presence/absence of a key — it works regardless
-	// of the key's declared type, so Null on a Numeric key must pass.
+	// "Null" tests for the presence/absence of a key. It works regardless of
+	// the key's declared type, so Null on a Numeric key must pass.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1150,7 +1149,7 @@ func TestCheckPolicy_ConditionType_NullOperator_AcceptsAnyType(t *testing.T) {
 
 func TestCheckPolicy_ConditionType_AwsPrefixKey_SkipsTypeCheck(t *testing.T) {
 	// AWS-global keys (aws:*) aren't in any service's catalog, so we don't
-	// know their types. Skip the type check — better than false positives.
+	// know their types. Skip the type check to avoid false positives.
 	c := withConditionKeys(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1166,11 +1165,11 @@ func TestCheckPolicy_ConditionType_AwsPrefixKey_SkipsTypeCheck(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_FromActionResource_Allowed(t *testing.T) {
-	// AWS lists many condition keys only under Actions[].Resources[].ConditionKeys —
-	// they don't appear in ActionConditionKeys at all. ec2:CreateNetworkInterfacePermission
-	// is the canonical example: its ActionConditionKeys is just ec2:Region, but
+	// AWS lists many condition keys only under Actions[].Resources[].ConditionKeys,
+	// not in ActionConditionKeys at all. ec2:CreateNetworkInterfacePermission is
+	// the canonical example: its ActionConditionKeys is just ec2:Region, but
 	// ec2:AuthorizedService is declared under its network-interface resource and
-	// is the documented way to scope the permission. The validator has to merge
+	// is the documented way to scope the permission. The validator must merge
 	// resource-level keys into the per-action allowed set or it will falsely
 	// reject correct policies.
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
@@ -1197,7 +1196,7 @@ func TestCheckPolicy_ConditionKey_FromActionResource_Allowed(t *testing.T) {
 }
 
 func TestCheckPolicy_ConditionKey_FromTopLevelResource_Allowed(t *testing.T) {
-	// Other services declare the resource's full ConditionKeys list only at
+	// Some services declare the resource's full ConditionKeys list only at
 	// the top-level Resources[] entry and leave Actions[].Resources[].ConditionKeys
 	// empty. Both shapes appear in production catalogs; the validator must
 	// accept keys from either place when the action targets that resource type.
@@ -1254,8 +1253,8 @@ func TestCheckPolicy_ConditionKey_ResourceLevel_StillRejectsUnknown(t *testing.T
 
 func TestCheckPolicy_ConditionKey_WildcardAction_IncludesResourceLevelKeys(t *testing.T) {
 	// Wildcard action names fall back to svc.allKeys. Resource-level keys
-	// must be merged into that union too, otherwise s3:* would silently lose
-	// access to keys that real-but-unspecified actions need.
+	// must be merged into that union too, or s3:* would silently lose access
+	// to keys that real-but-unspecified actions need.
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"svc": {
 			actions:         map[string][]string{"DoThing": nil},
@@ -1383,13 +1382,12 @@ func TestCheckPolicy_Resource_BareStar_InsideList(t *testing.T) {
 
 func TestCheckPolicy_Resource_WildcardWithinARN(t *testing.T) {
 	// "arn:aws:s3:::*" is an IAM wildcard ARN. IAM treats '*' as "any
-	// chars, including ':' and '/'", so the same value can satisfy
-	// either the bucket template (when '*' expands to a bucket name)
-	// or the object template (when '*' expands to "bucket/key"). The
-	// validator follows IAM's semantics here: when strict matching
-	// fails and the value carries '*' or '?', it falls back to a
-	// language-intersection check. The bucket-vs-object distinction
-	// is still enforced for *concrete* ARNs — see
+	// chars, including ':' and '/'", so the same value can satisfy either
+	// the bucket template (when '*' expands to a bucket name) or the object
+	// template (when '*' expands to "bucket/key"). When strict matching fails
+	// and the value carries '*' or '?', the validator falls back to a
+	// language-intersection check. The bucket-vs-object distinction is still
+	// enforced for concrete ARNs; see
 	// TestCheckPolicy_Resource_BucketArnOnObjectAction_Rejected.
 	c := withResources(t)
 	for _, action := range []string{"s3:ListBucket", "s3:GetObject"} {
@@ -1425,7 +1423,7 @@ func TestCheckPolicy_Resource_MultipleActions_UnionsPatterns(t *testing.T) {
 
 func TestCheckPolicy_Resource_WildcardActionFallsBackToServiceArns(t *testing.T) {
 	// "s3:*" covers every s3 action; we can't narrow which resource types,
-	// so use the service-wide union — every declared template.
+	// so use the service-wide union of every declared template.
 	c := withResources(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1487,7 +1485,7 @@ func TestCheckPolicy_Resource_NetworkFailure_Surfaces(t *testing.T) {
 
 func TestCheckPolicy_Resource_WildcardServicePrefix_SkipsCheck(t *testing.T) {
 	// "*:GetObject" can't be pinned to a single service catalog, so the
-	// resource check bails — even if the ARN is obviously wrong.
+	// resource check bails even if the ARN is obviously wrong.
 	c := withResources(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1612,7 +1610,7 @@ func TestCheckPolicy_Resource_AllActionsMalformed_SkipsCheck(t *testing.T) {
 // Resources entry is absent. The fake server emits "Resources":[]; the live
 // AWS catalog emits "Resources":null or omits the field entirely. encoding/
 // json decodes [] to an empty (non-nil) slice and null/missing to nil, but
-// our handling only looks at len(), where both shapes are equivalent — so
+// our handling only looks at len(), where both shapes are equivalent, so
 // the test exercises exactly the same code path checkResources hits in
 // production for iam:ListUsers and friends.
 func withServiceLevelAction(t *testing.T) *iamcatalog.Catalog {
@@ -1625,7 +1623,7 @@ func withServiceLevelAction(t *testing.T) *iamcatalog.Catalog {
 			},
 			actionResources: map[string][]string{
 				"WriteThing": {"thing"},
-				// "ListAllThings" omitted → "Resources":[] in the fake JSON.
+				// "ListAllThings" omitted: "Resources":[] in the fake JSON.
 				// The live catalog uses "Resources":null for the same case;
 				// both decode to a zero-length slice, which is all the
 				// per-action ARN check looks at.
@@ -1695,7 +1693,7 @@ func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 	assert.NotContains(t, err.Error(), "does not match", "valid s3 ARN should not be flagged when only the action name is wrong")
 }
 
-// Direction 2 — Action-side enforcement. Direction 1 (Resource → Action)
+// Direction 2: Action-side enforcement. Direction 1 (Resource to Action)
 // is exercised by the tests above; the cases below cover the mirror
 // requirement: each Action listed in a Statement must have at least one
 // Resource in that Statement whose ARN matches the action's templates.
@@ -1703,9 +1701,9 @@ func TestCheckPolicy_Resource_UnknownAction_NoDoubleFlag(t *testing.T) {
 func TestCheckPolicy_Resource_PerAction_OrphanedAction_Flagged(t *testing.T) {
 	// The canonical mistake: s3:GetObject + s3:ListBucket together with only
 	// an object ARN. ListBucket operates on the bucket itself, so no Resource
-	// in the Statement matches its templates — it's silently orphaned.
-	// Strict mode names the orphan so the user knows whether to add a bucket
-	// ARN or drop ListBucket.
+	// in the Statement matches its templates; it's silently orphaned. Strict
+	// mode names the orphan so the user knows whether to add a bucket ARN or
+	// drop ListBucket.
 	c := withResources(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1720,12 +1718,12 @@ func TestCheckPolicy_Resource_PerAction_OrphanedAction_Flagged(t *testing.T) {
 	assert.Contains(t, err.Error(), `action "s3:ListBucket"`)
 	assert.Contains(t, err.Error(), "has no resource that matches its ARN format")
 	assert.Contains(t, err.Error(), "Statement[0]")
-	// GetObject does have a matching resource — it must not be flagged.
+	// GetObject does have a matching resource, so it must not be flagged.
 	assert.NotContains(t, err.Error(), `action "s3:GetObject"`)
 }
 
 func TestCheckPolicy_Resource_PerAction_BareStarResource_CoversAllActions(t *testing.T) {
-	// A bare "*" Resource grants every action in the Statement — direction 2
+	// A bare "*" Resource grants every action in the Statement. Direction 2
 	// must short-circuit so the otherwise-orphaned action isn't flagged.
 	c := withResources(t)
 	policy := map[string]any{
@@ -1741,7 +1739,7 @@ func TestCheckPolicy_Resource_PerAction_BareStarResource_CoversAllActions(t *tes
 
 func TestCheckPolicy_Resource_PerAction_BareStarInsideList_CoversAllActions(t *testing.T) {
 	// "*" sitting alongside a concrete ARN inside the Resource list still
-	// covers every action — the catch-all wins even when the concrete entry
+	// covers every action. The catch-all wins even when the concrete entry
 	// only fits one of the listed actions.
 	c := withResources(t)
 	policy := map[string]any{
@@ -1756,7 +1754,7 @@ func TestCheckPolicy_Resource_PerAction_BareStarInsideList_CoversAllActions(t *t
 }
 
 func TestCheckPolicy_Resource_PerAction_BareStarAction_SkipsCheck(t *testing.T) {
-	// Action="*" already bypasses checkResources entirely — direction 2 must
+	// Action="*" already bypasses checkResources entirely. Direction 2 must
 	// follow the same skip even though the Resource is plainly nonsense.
 	c := withResources(t)
 	policy := map[string]any{
@@ -1772,13 +1770,13 @@ func TestCheckPolicy_Resource_PerAction_BareStarAction_SkipsCheck(t *testing.T) 
 
 func TestCheckPolicy_Resource_PerAction_WildcardServicePrefix_SkipsCheck(t *testing.T) {
 	// "*:GetObject" can't be pinned to one service catalog, so the whole
-	// resource check skips. Direction 2 must skip alongside direction 1.
+	// resource check skips, and direction 2 skips alongside direction 1.
 	c := withResources(t)
 	policy := map[string]any{
 		"Statement": []any{
 			map[string]any{
 				"Action":   "*:GetObject",
-				"Resource": "arn:aws:s3:::my-bucket", // wrong shape — must not be flagged
+				"Resource": "arn:aws:s3:::my-bucket", // wrong shape, must not be flagged
 			},
 		},
 	}
@@ -1802,12 +1800,11 @@ func TestCheckPolicy_Resource_PerAction_WildcardActionName_UsesServiceWideArns(t
 }
 
 func TestCheckPolicy_Resource_PerAction_WildcardAlongsideOrphanAction_StillFlagsOrphan(t *testing.T) {
-	// "s3:*" alongside "s3:ListBucket" with only an object ARN. The
-	// wildcard pulls in allArns (object + bucket templates) so it's
-	// covered, but the concrete ListBucket action still constrains to the
-	// bucket template — which no Resource matches. ListBucket stays
-	// orphaned. Direction 2 must not let the wildcard's permissiveness
-	// hide the concrete mismatch.
+	// "s3:*" alongside "s3:ListBucket" with only an object ARN. The wildcard
+	// pulls in allArns (object + bucket templates) so it's covered, but the
+	// concrete ListBucket action still constrains to the bucket template,
+	// which no Resource matches. ListBucket stays orphaned. Direction 2 must
+	// not let the wildcard's permissiveness hide the concrete mismatch.
 	c := withResources(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -1832,7 +1829,7 @@ func TestCheckPolicy_Resource_PerAction_MultipleOrphans_AllNamed(t *testing.T) {
 		"Statement": []any{
 			map[string]any{
 				"Action":   []any{"s3:GetObject", "s3:ListBucket", "s3:PutBucketPolicy"},
-				"Resource": "arn:aws:s3:::my-bucket/key", // only object — both bucket-only actions orphan
+				"Resource": "arn:aws:s3:::my-bucket/key", // only object; both bucket-only actions orphan
 			},
 		},
 	}
@@ -1845,7 +1842,7 @@ func TestCheckPolicy_Resource_PerAction_MultipleOrphans_AllNamed(t *testing.T) {
 
 func TestCheckPolicy_Resource_PerAction_NotActionStatement_Skipped(t *testing.T) {
 	// NotAction means "every IAM action except these," so the listed entries
-	// don't define a keyspace direction 2 can consult — the action-side check
+	// don't define a keyspace direction 2 can consult. The action-side check
 	// would otherwise falsely orphan a resource that's perfectly valid for
 	// one of the (unlisted, much larger) NotAction complement.
 	c := withResources(t)
@@ -1939,8 +1936,8 @@ func TestCheckPolicy_Resource_PerAction_UnknownAction_SkipsDir2(t *testing.T) {
 func TestCheckPolicy_Resource_PerAction_WildcardMatchingNothing_SkipsDir2(t *testing.T) {
 	// Mirror of UnknownAction_SkipsDir2 for wildcard names: "s3:Frobni*"
 	// matches no real action in the catalog and is already flagged by
-	// checkOne. Direction 2 must not pile on a "has no resource" line —
-	// there's no "ARN format" for a wildcard with no expansion. The
+	// checkOne. Direction 2 must not pile on a "has no resource" line since
+	// there's no ARN format for a wildcard with no expansion. The
 	// resource-side message from direction 1 still stands.
 	c := withResources(t)
 	policy := map[string]any{
@@ -1960,10 +1957,10 @@ func TestCheckPolicy_Resource_PerAction_WildcardMatchingNothing_SkipsDir2(t *tes
 }
 
 func TestCheckPolicy_Resource_PerAction_WildcardMatchingSomething_StillTriggersDir2(t *testing.T) {
-	// Counterpoint: a wildcard that DOES expand to real actions
-	// ("s3:Get*" — GetObject etc.) keeps direction 2 active. If the
-	// Resource doesn't fit any s3 ARN format, the action is legitimately
-	// orphaned and must be reported.
+	// Counterpoint: a wildcard that expands to real actions ("s3:Get*"
+	// matches GetObject etc.) keeps direction 2 active. If the Resource
+	// doesn't fit any s3 ARN format, the action is legitimately orphaned
+	// and must be reported.
 	c := withResources(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -2037,9 +2034,9 @@ func TestCheckPolicy_Resource_PerAction_KnownActionWithoutPerActionArns_StillTri
 
 func TestCheckPolicy_Resource_PerAction_DuplicateActionTokens_EmitOneOrphanLine(t *testing.T) {
 	// Generated configs and copy-paste sometimes leave the same action token
-	// in an Action list twice — or twice in different casing, since IAM
-	// action names are case-insensitive. Direction 2 must emit one orphan
-	// line per distinct action, not one per occurrence.
+	// in an Action list twice, or twice in different casing since IAM action
+	// names are case-insensitive. Direction 2 must emit one orphan line per
+	// distinct action, not one per occurrence.
 	c := withResources(t)
 	for _, actions := range [][]any{
 		{"s3:ListBucket", "s3:ListBucket"}, // identical spelling
@@ -2065,11 +2062,11 @@ func TestCheckPolicy_Resource_PerAction_DuplicateActionTokens_EmitOneOrphanLine(
 
 func TestCheckPolicy_Resource_PerAction_FullyCoveredPairs_ShortCircuit(t *testing.T) {
 	// When every Resource and every Action already has its "matched" bit
-	// set, subsequent pair iterations must skip the inner regex work — the
-	// optimization that lets the matching loop decay toward the old pooled-
-	// patterns cost in well-formed policies. Two bucket-only actions paired
-	// with two bucket ARNs exercises the late-iteration "both already true"
-	// branch (the last pair sees resourceMatched and actionCovered both
+	// set, subsequent pair iterations must skip the inner regex work. This
+	// is the optimization that lets the matching loop decay toward the old
+	// pooled-patterns cost in well-formed policies. Two bucket-only actions
+	// paired with two bucket ARNs exercises the late-iteration "both already
+	// true" branch (the last pair sees resourceMatched and actionCovered both
 	// already set from earlier pairs).
 	c := withResources(t)
 	policy := map[string]any{
@@ -2084,12 +2081,12 @@ func TestCheckPolicy_Resource_PerAction_FullyCoveredPairs_ShortCircuit(t *testin
 }
 
 func TestCheckPolicy_Resource_PerAction_ServiceWithoutArns_SkipsActionCheck(t *testing.T) {
-	// Defensive: a service whose catalog declares zero ARN templates
-	// anywhere yields an empty per-action pattern set. Without info to
-	// enforce against, direction 2 must skip — matching the same
-	// "no info → don't double-flag" philosophy checkOne already uses
-	// for unknown actions. A real AWS catalog won't produce this shape,
-	// but the validator must not flag the action if it ever did.
+	// Defensive: a service whose catalog declares zero ARN templates anywhere
+	// yields an empty per-action pattern set. Without info to enforce against,
+	// direction 2 must skip, matching the same "no info, don't double-flag"
+	// approach checkOne already uses for unknown actions. A real AWS catalog
+	// won't produce this shape, but the validator must not flag the action if
+	// it ever did.
 	//
 	// Two sub-cases exercise the skip from different angles:
 	//   - bare "*" Resource: direction 2 short-circuits before reaching
@@ -2100,7 +2097,7 @@ func TestCheckPolicy_Resource_PerAction_ServiceWithoutArns_SkipsActionCheck(t *t
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
 		"svc": {
 			actions: map[string][]string{"DoThing": nil},
-			// no actionResources, no resources → allArns and per-action ARNs
+			// no actionResources, no resources: allArns and per-action ARNs
 			// are both empty.
 		},
 	})
@@ -2118,7 +2115,7 @@ func TestCheckPolicy_Resource_PerAction_ServiceWithoutArns_SkipsActionCheck(t *t
 		require.NoError(t, iamcatalog.CheckPolicy(context.Background(), c, policy))
 	})
 
-	t.Run("concrete resource — direction 2 still skips the empty action", func(t *testing.T) {
+	t.Run("concrete resource, direction 2 still skips the empty action", func(t *testing.T) {
 		policy := map[string]any{
 			"Statement": []any{
 				map[string]any{
@@ -2131,7 +2128,7 @@ func TestCheckPolicy_Resource_PerAction_ServiceWithoutArns_SkipsActionCheck(t *t
 		// Direction 1 flags the resource (no pattern to match against).
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `resource "arn:aws:svc:::anything"`)
-		// Direction 2 must NOT also flag the action — len(patterns)==0
+		// Direction 2 must NOT also flag the action; len(patterns)==0
 		// short-circuits the per-action check.
 		assert.NotContains(t, err.Error(), `action "svc:DoThing" has no resource`)
 	})
@@ -2141,8 +2138,8 @@ func TestCheckPolicy_Resource_PerAction_SingleAction_BothDirectionsReportConflic
 	// When the only action and the only resource conflict, both directions
 	// detect the same mismatch from opposite angles: direction 1 names the
 	// resource, direction 2 names the action. The wording is intentionally
-	// distinct — readers should see both perspectives, not a single line
-	// that hides which side of the pair is "wrong."
+	// distinct so readers see both perspectives, not a single line that hides
+	// which side of the pair is "wrong."
 	c := withResources(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -2160,7 +2157,7 @@ func TestCheckPolicy_Resource_PerAction_SingleAction_BothDirectionsReportConflic
 
 // withColonExtendedTemplates wires up a service whose long template extends
 // the short one with ':' rather than '/'. This mirrors the CloudWatch Logs
-// pair (log-group → log-stream) where log-group names contain '/' and the
+// pair (log-group to log-stream) where log-group names contain '/' and the
 // log-stream template adds ":log-stream:..." rather than "/...". The
 // resource validator's heuristic must let the last placeholder of the short
 // template span '/'.
@@ -2188,7 +2185,7 @@ func withColonExtendedTemplates(t *testing.T) *iamcatalog.Catalog {
 func TestCheckPolicy_Resource_ColonExtendedSibling_LastPlaceholderAllowsSlash(t *testing.T) {
 	// The short template's last placeholder must span '/' because the long
 	// sibling extends with ':' (not '/'). Real-world shape: a CloudWatch
-	// Logs log-group ARN whose name is "/aws/codebuild/foo" — the old
+	// Logs log-group ARN whose name is "/aws/codebuild/foo". The old
 	// "[^:/]*" rule rejected it as not matching any ARN format.
 	c := withColonExtendedTemplates(t)
 	policy := map[string]any{
@@ -2223,11 +2220,11 @@ func TestCheckPolicy_Resource_IamWildcardSpansColon(t *testing.T) {
 	// IAM treats '*' as "any chars including ':' and '/'". The canonical
 	// CodeBuild-style policy uses
 	//   "...:group:/path/to/foo:*"
-	// to mean "the group plus all sub-resources." The short (group)
-	// template's last placeholder must be greedy enough for this to
-	// match — otherwise valid IAM policies are falsely rejected. Union
-	// semantics let it match against the group template even though the
-	// statement also lists actions that target the sub resource type.
+	// to mean "the group plus all sub-resources." The short (group) template's
+	// last placeholder must be greedy enough for this to match, otherwise
+	// valid IAM policies are falsely rejected. Union semantics let it match
+	// against the group template even though the statement also lists actions
+	// that target the sub resource type.
 	c := withColonExtendedTemplates(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -2244,7 +2241,7 @@ func TestCheckPolicy_Resource_IamWildcardSpansColon(t *testing.T) {
 
 func TestCheckPolicy_Resource_IamWildcard_SpansColonExtensionLiteral(t *testing.T) {
 	// When the action only targets the long resource (e.g. log-stream), the
-	// user often writes the short-template prefix plus an IAM ":*" tail —
+	// user often writes the short-template prefix plus an IAM ":*" tail,
 	// expecting IAM to expand ":*" over the literal ":sub:<name>" segment
 	// the long template requires. Strict regex matching can't honor that
 	// (':' is a hard separator), so the validator falls back to the
@@ -2264,7 +2261,7 @@ func TestCheckPolicy_Resource_IamWildcard_SpansColonExtensionLiteral(t *testing.
 }
 
 func TestCheckPolicy_Resource_IamWildcard_BroadServicePrefix(t *testing.T) {
-	// "arn:aws:svc:*:*:*" is a fully-wildcarded ARN — every segment after
+	// "arn:aws:svc:*:*:*" is a fully-wildcarded ARN: every segment after
 	// the service prefix is '*'. IAM expands these wildcards over the
 	// template's literal anchors (":group:" etc.), so the validator must
 	// accept it via the intersection check rather than insisting on the
@@ -2323,11 +2320,11 @@ func TestCheckPolicy_Resource_IamWildcard_RejectsConcreteMismatch(t *testing.T) 
 func TestCheckPolicy_Resource_ColonExtendedSibling_RejectsConcreteChildShape(t *testing.T) {
 	// The colon-extended fix relaxes the short template's last placeholder
 	// to span '/' (so log-group names with slashes pass) and to accept IAM
-	// wildcard tails like ":*". It must NOT also accept *concrete* ARNs
-	// whose suffix looks like the long template's structure — e.g. a real
-	// log-stream ARN paired with a log-group-only action like
-	// CreateLogGroup. Without this guard the validator would silently lose
-	// its action/resource-type mismatch check for colon-extended families.
+	// wildcard tails like ":*". It must NOT also accept concrete ARNs whose
+	// suffix looks like the long template's structure, e.g. a real log-stream
+	// ARN paired with a log-group-only action like CreateLogGroup. Without
+	// this guard the validator would silently lose its action/resource-type
+	// mismatch check for colon-extended families.
 	c := withColonExtendedTemplates(t)
 	policy := map[string]any{
 		"Statement": []any{
@@ -2372,9 +2369,9 @@ func TestCheckPolicy_Resource_SlashExtendedSibling_LastPlaceholderStaysBounded(t
 }
 
 // withLambdaShape wires up a service with a base "function" resource and
-// a colon-extension "function-alias" sibling — the structural shape AWS
-// uses for Lambda function vs function-alias / function-version. Used by
-// the qualifier-tail end-to-end tests below.
+// a colon-extension "function-alias" sibling, the structural shape AWS uses
+// for Lambda function vs function-alias / function-version. Used by the
+// qualifier-tail end-to-end tests below.
 func withLambdaShape(t *testing.T) *iamcatalog.Catalog {
 	t.Helper()
 	fs := newFakeServerWithKeys(t, map[string]fakeServiceData{
@@ -2398,7 +2395,7 @@ func withLambdaShape(t *testing.T) *iamcatalog.Catalog {
 func TestCheckPolicy_Resource_QualifierTail_Accepted(t *testing.T) {
 	// The base "thing" resource has colon-extending siblings ("thing:${A}",
 	// "thing:${V}"). IAM accepts qualified ARNs on the base action, and the
-	// strict validator should too — even though the catalog only lists the
+	// strict validator should too, even though the catalog only lists the
 	// base resource type against the action.
 	c := withLambdaShape(t)
 	for _, arn := range []string{
@@ -2472,8 +2469,8 @@ func TestCompileARNTemplate_ColonExtendedSiblingAllowsQualifierTail(t *testing.T
 }
 
 func TestCompileARNTemplate_LiteralBetweenColonSiblingKeepsRule4(t *testing.T) {
-	// CloudWatch Logs log-group's sibling extends with ":log-stream:${LS}" —
-	// the literal "log-stream" between the colon and the next "${" means
+	// CloudWatch Logs log-group's sibling extends with ":log-stream:${LS}".
+	// The literal "log-stream" between the colon and the next "${" means
 	// rule 3a does NOT fire. Rule 4 stays in force and the only colon-tail
 	// accepted on the base is the IAM wildcard ":*" / ":?". A concrete
 	// "<group>:log-stream:<stream>" must still fail against the log-group
@@ -2486,7 +2483,7 @@ func TestCompileARNTemplate_LiteralBetweenColonSiblingKeepsRule4(t *testing.T) {
 	assert.True(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:/aws/codebuild/foo:*"))
 	// log-stream form must NOT match the log-group base.
 	assert.False(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:foo:log-stream:bar"))
-	// A literal qualifier tail (no wildcard) must NOT match the base either —
+	// A literal qualifier tail (no wildcard) must NOT match the base either;
 	// rule 4 only allows IAM wildcard tails.
 	assert.False(t, re.MatchString("arn:aws:logs:us-east-1:1:log-group:foo:bar"))
 }
@@ -2505,7 +2502,7 @@ func TestSplitPlaceholderKey(t *testing.T) {
 		{"kms:EncryptionContext:${EncryptionContextKey}", "kms:EncryptionContext:", true},
 		{"s3:ExistingObjectTag/${key}", "s3:ExistingObjectTag/", true},
 
-		// Exact-match keys (no placeholder tail) — fall through cleanly.
+		// Exact-match keys (no placeholder tail): fall through cleanly.
 		{"s3:prefix", "", false},
 		{"sts:RoleSessionName", "", false},
 		{"", "", false},

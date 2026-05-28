@@ -32,9 +32,9 @@ func TestIamWildcardToRegex(t *testing.T) {
 func TestRegexIntersects_MalformedFailsClosed(t *testing.T) {
 	// Unparseable regex sources should propagate as "no intersection
 	// proven" rather than panic. The validator drops the pattern silently
-	// if compilation fails — it should never happen in normal flow, since
-	// both sides come from us, but the package-private helper guards
-	// against it and the defensive return is worth covering.
+	// if compilation fails. It should never happen in normal flow since
+	// both sides come from us, but the helper guards against it and the
+	// defensive return is worth covering.
 	assert.False(t, iamcatalog.RegexIntersects("[unterminated", "^a$"))
 	assert.False(t, iamcatalog.RegexIntersects("^a$", "[unterminated"))
 }
@@ -50,7 +50,7 @@ func TestAcceptedRanges(t *testing.T) {
 		{"any-not-nl", syntax.InstRuneAnyNotNL, nil, [][2]rune{{0, '\n' - 1}, {'\n' + 1, 0x10ffff}}},
 		{"single", syntax.InstRune1, []rune{'a'}, [][2]rune{{'a', 'a'}}},
 		{"range", syntax.InstRune, []rune{'a', 'c', 'x', 'z'}, [][2]rune{{'a', 'c'}, {'x', 'z'}}},
-		// Non-char-consuming ops must yield nil — the BFS uses this as a
+		// Non-char-consuming ops must yield nil; the BFS uses this as a
 		// signal that the instruction isn't a real character transition.
 		{"match", syntax.InstMatch, nil, nil},
 		{"nop", syntax.InstNop, nil, nil},
@@ -112,7 +112,7 @@ func TestRegexIntersects(t *testing.T) {
 		},
 		{
 			name: "user '*' covers multiple template segments",
-			// "arn:aws:svc:*:*:*" — three trailing wildcards must be
+			// "arn:aws:svc:*:*:*": three trailing wildcards must be
 			// allowed to span the template's ":group:<name>" segments.
 			a:    `^arn:aws:svc:.*:.*:.*$`,
 			b:    `^arn:aws:svc:[^:]*:[^:]*:group:[^:]*$`,
@@ -127,7 +127,7 @@ func TestRegexIntersects(t *testing.T) {
 		{
 			name: "bounded template rejects '/' in user wildcard segment",
 			// The template's "[^:/]*" segment must not be satisfied by
-			// the user's "X/Y" expansion — that '/' is a hard separator.
+			// the user's "X/Y" expansion; '/' is a hard separator.
 			a:    `^arn:aws:svc:::foo/bar$`,
 			b:    `^arn:[^:]*:svc:::[^:/]*$`,
 			want: false,

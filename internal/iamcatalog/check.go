@@ -11,51 +11,50 @@ import (
 )
 
 // CheckPolicy walks the IAM policy and runs catalog-backed checks against the
-// AWS service reference. It is designed to be called *after* schema validation
-// has already passed, so structural shapes are assumed valid. Three checks run:
+// AWS service reference. It must be called after schema validation passes, so
+// structural shapes are assumed valid. Three checks run:
 //
 //  1. Action existence. Non-wildcard Action/NotAction values like "s3:GetObject"
-//     are verified against the catalog — both the service prefix and the
-//     action name must exist. Wildcards within the action name ("s3:Get*",
-//     "s3:G?tObject", "s3:*") are expanded against the service's action set
-//     and must match at least one real action, so plausible-looking typos
-//     like "s3:Frobni*" are still caught. The bare "*" and wildcards in the
-//     service prefix ("*:GetObject", "s*:Foo") are accepted without catalog
-//     lookup — expanding them would require fetching every service catalog.
+//     are verified against the catalog: both the service prefix and the action
+//     name must exist. Wildcards in the action name ("s3:Get*", "s3:G?tObject",
+//     "s3:*") are expanded against the service's action set and must match at
+//     least one real action, so typos like "s3:Frobni*" are caught. The bare
+//     "*" and wildcards in the service prefix ("*:GetObject", "s*:Foo") are
+//     accepted without a catalog lookup, since expanding them would require
+//     fetching every service catalog.
 //
-//  2. Condition keys. Each key under Condition is checked against the union
-//     of condition keys the statement's actions consume. Keys with the
-//     "aws:" prefix are AWS-global and always pass; service-specific keys
-//     are looked up per action (so "s3:prefix" passes on "s3:ListBucket"
-//     but fails on "s3:GetObject"). Wildcards behave asymmetrically here:
-//     a wildcard *name* like "s3:*" or "s3:Get*" falls back to the service-
-//     wide ConditionKeys union, while a wildcard *service prefix* like
-//     "*:GetObject" or the bare "*" skip the condition check entirely
-//     because no single service catalog can be selected.
+//  2. Condition keys. Each key under Condition is checked against the union of
+//     condition keys the statement's actions consume. Keys with the "aws:"
+//     prefix are AWS-global and always pass; service-specific keys are looked
+//     up per action (so "s3:prefix" passes on "s3:ListBucket" but fails on
+//     "s3:GetObject"). Wildcards are asymmetric: a wildcard name like "s3:*"
+//     or "s3:Get*" falls back to the service-wide ConditionKeys union, while a
+//     wildcard service prefix like "*:GetObject" or the bare "*" skips the
+//     condition check, since no single service catalog can be selected.
 //
-//  3. Resource ARNs. Each Resource value must match one of the ARN templates
-//     declared for at least one of the statement's actions (e.g. a bucket
-//     ARN doesn't pass on s3:GetObject — that action only operates on object
-//     ARNs). The bare "*" Resource always passes. Wildcards in Action follow
-//     the same scheme as the condition-key check: wildcard names use the
-//     service-wide union of ARN formats, while a wildcard service prefix or
-//     bare "*" Action skip the check entirely. NotResource statements skip
-//     the check too (their semantics invert the keyspace).
+//  3. Resource ARNs. Each Resource value must match an ARN template of at least
+//     one of the statement's actions (e.g. a bucket ARN does not pass on
+//     s3:GetObject, which operates only on object ARNs). The bare "*" Resource
+//     always passes. Wildcards in Action follow the same scheme as the
+//     condition-key check: wildcard names use the service-wide union of ARN
+//     formats, while a wildcard service prefix or bare "*" Action skips the
+//     check. NotResource statements skip the check too, since their semantics
+//     invert the keyspace.
 //
 // Strings that are neither "*" nor "service:action" shape (e.g. plain
-// "GetObject" with no colon) are rejected outright — the JSON Schema only
-// checks that Action is a string, so this is where we catch missing prefixes.
+// "GetObject" with no colon) are rejected: the JSON Schema only checks that
+// Action is a string, so this is where missing prefixes are caught.
 //
-// Errors surface, they don't get swallowed:
-//   - ErrUnknownService (a typo'd prefix) — reported per-action; the rest of
+// Errors surface rather than being swallowed:
+//   - ErrUnknownService (a typo'd prefix) is reported per-action; the rest of
 //     the statement is still evaluated so other typos still come out.
-//   - ErrUnavailable (the catalog endpoint is unreachable) — surfaces as a
-//     hard error from CheckPolicy. The whole point of policy_strict is to
-//     consult the catalog; without it the function cannot do its job.
+//   - ErrUnavailable (the catalog endpoint is unreachable) surfaces as a hard
+//     error from CheckPolicy. policy_strict exists to consult the catalog;
+//     without it the function cannot do its job.
 //
-// A nil catalog is the one exception: it's a defensive guard for default-
-// constructed PolicyStrictFunction values in tests, not a graceful-degrade
-// path. Production always sets a real catalog.
+// A nil catalog is the one exception: it guards default-constructed
+// PolicyStrictFunction values in tests, not a graceful-degrade path.
+// Production always sets a real catalog.
 func CheckPolicy(ctx context.Context, c *Catalog, policy any) error {
 	if c == nil {
 		return nil
@@ -90,22 +89,21 @@ func CheckPolicy(ctx context.Context, c *Catalog, policy any) error {
 }
 
 // checkOne validates a single Action/NotAction string. Returns (issue, err).
-// A non-nil err is ErrUnavailable, meaning the catalog itself is unreachable
-// — CheckPolicy bubbles it up directly so the user sees one clear message
+// A non-nil err is ErrUnavailable, meaning the catalog is unreachable;
+// CheckPolicy bubbles it up directly so the user sees one clear message
 // instead of one per failed Lookup.
 func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) (string, error) {
 	if action == "*" {
-		return "", nil // the all-actions wildcard — valid IAM, nothing to check
+		return "", nil // the all-actions wildcard: valid IAM, nothing to check
 	}
 	prefix, name, ok := splitAction(action)
 	if !ok {
 		return fmt.Sprintf("Statement[%d]: malformed action %q (expected \"service:action\" or \"*\")", stmtIndex, action), nil
 	}
 	if strings.ContainsAny(prefix, "*?") {
-		// Wildcard in the service prefix would require fetching every
-		// service in the catalog (449+ at time of writing) to know if any
-		// real action matches — pattern expansion of that scope is out of
-		// scope. Skip silently.
+		// A wildcard service prefix would require fetching every service in
+		// the catalog (449+ at time of writing) to know if any real action
+		// matches. Expanding that is out of scope, so skip silently.
 		return "", nil
 	}
 	svc, err := c.Lookup(ctx, prefix)
@@ -119,7 +117,7 @@ func checkOne(ctx context.Context, c *Catalog, action string, stmtIndex int) (st
 	}
 	if strings.ContainsAny(name, "*?") {
 		// Wildcard within the action name. Expand against the service's
-		// real action list — catches patterns like "s3:Frobni*" that look
+		// action list to catch patterns like "s3:Frobni*" that look
 		// plausible but match nothing.
 		if !svc.matchesAny(name) {
 			return fmt.Sprintf("Statement[%d]: action pattern %q matches no actions in service %q", stmtIndex, action, prefix), nil
@@ -183,17 +181,17 @@ func appendStringOrList(out []string, v any) []string {
 // err is ErrUnavailable; CheckPolicy bubbles it up directly.
 //
 // Wildcards are handled asymmetrically by design:
-//   - Bare "*" or a wildcard service prefix ("*:GetObject") skip the whole
-//     condition check — no single service catalog can be selected.
-//   - A wildcard action name ("s3:*", "s3:Get*") DOES proceed: we look up
-//     the service and use its service-wide ConditionKeys union (svc.allKeys)
-//     in place of per-action keys.
+//   - Bare "*" or a wildcard service prefix ("*:GetObject") skips the whole
+//     condition check, since no single service catalog can be selected.
+//   - A wildcard action name ("s3:*", "s3:Get*") does proceed: look up the
+//     service and use its service-wide ConditionKeys union (svc.allKeys) in
+//     place of per-action keys.
 //
 // Only positive Action entries drive the keyspace. A NotAction statement
 // means "every IAM action except these," so validating its Condition keys
-// against the listed exclusions would be backwards (a key valid for any of
-// the other 10,000 actions would get falsely flagged). For NotAction-only
-// statements we skip the check.
+// against the listed exclusions would be backwards: a key valid for any of
+// the other 10,000 actions would be falsely flagged. NotAction-only
+// statements skip the check.
 func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtIdx int) ([]string, error) {
 	cond, _ := stmt["Condition"].(map[string]any)
 	if len(cond) == 0 {
@@ -216,7 +214,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 			continue // checkOne already flags malformed actions
 		}
 		if strings.ContainsAny(prefix, "*?") {
-			return nil, nil // wildcard service → can't constrain
+			return nil, nil // wildcard service: cannot constrain
 		}
 		svc, err := c.Lookup(ctx, prefix)
 		switch {
@@ -251,13 +249,12 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 
 	// AssumeRoleWithWebIdentity lets a user-registered OIDC provider
 	// contribute "<provider-hostname>:<keyname>" condition keys. The
-	// provider URL isn't known statically, so the service reference
-	// only lists the AWS-preregistered providers (accounts.google.com,
-	// cognito-identity.amazonaws.com, …). If the statement targets
-	// AssumeRoleWithWebIdentity — directly or via a wildcard pattern
-	// like "sts:AssumeRoleWith*" or "sts:*" — accept any hostname-
-	// prefixed key as a dynamic OIDC provider key instead of flagging
-	// it as unknown.
+	// provider URL is not known statically, so the service reference only
+	// lists the AWS-preregistered providers (accounts.google.com,
+	// cognito-identity.amazonaws.com, and so on). If the statement targets
+	// AssumeRoleWithWebIdentity, directly or via a wildcard pattern like
+	// "sts:AssumeRoleWith*" or "sts:*", accept any hostname-prefixed key as a
+	// dynamic OIDC provider key instead of flagging it as unknown.
 	allowsOIDCKeys := statementCoversAction(actions, "sts", "AssumeRoleWithWebIdentity")
 
 	var issues []string
@@ -274,7 +271,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 			}
 			// Two acceptance paths: a direct hit in the exact-match set, or
 			// (failing that) a hit against one of the catalog-declared
-			// placeholder prefixes — keys like kms:EncryptionContext:<user>
+			// placeholder prefixes, such as kms:EncryptionContext:<user>
 			// or s3:ExistingObjectTag/<user>. The type for a prefix match
 			// is looked up under the prefix itself (keyTypes is indexed by
 			// the canonical form addConditionKey chose at catalog parse time).
@@ -295,7 +292,7 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 			// Key passed the per-action check; if we know its declared type
 			// and the operator's expected type, confirm they match. Missing
 			// either side (unknown operator or untyped key) means we can't
-			// judge — skip silently.
+			// judge, so skip silently.
 			if !opKnown || expectedType == "" || actualType == "" {
 				continue
 			}
@@ -311,18 +308,17 @@ func checkConditions(ctx context.Context, c *Catalog, stmt map[string]any, stmtI
 
 // matchPlaceholderPrefix reports which (if any) declared placeholder prefix
 // the user-supplied condition key instantiates. The match requires at least
-// one character past the prefix — an empty tail like "kms:EncryptionContext:"
-// alone has no instantiated value and is still flagged as an unknown key,
-// keeping the validator strict against malformed structural shapes.
+// one character past the prefix. An empty tail like "kms:EncryptionContext:"
+// has no instantiated value and is still flagged as an unknown key, keeping
+// the validator strict against malformed shapes.
 //
-// A tail that *itself* starts with "${" is rejected too. This catches the
+// A tail that itself starts with "${" is rejected too. This catches the
 // common docs-paste typo where a user copies "kms:EncryptionContext:${EncryptionContextKey}"
-// verbatim into their policy: IAM does not expand "${...}" in condition
-// keys, so the literal template would never match anything at evaluation
-// time. The leading-only check is deliberate — a tail that contains "${"
-// further in (e.g. an opaque tag value with a literal "${" substring) is
-// still accepted, since only the leading position is a clear copy-paste
-// signal.
+// verbatim into their policy: IAM does not expand "${...}" in condition keys,
+// so the literal template never matches at evaluation time. The check is
+// leading-only: a tail with "${" further in (e.g. an opaque tag value with a
+// literal "${" substring) is still accepted, since only the leading position
+// is a clear copy-paste signal.
 func matchPlaceholderPrefix(key string, prefixes map[string]struct{}) string {
 	for p := range prefixes {
 		if len(key) > len(p) && strings.HasPrefix(key, p) {
@@ -339,7 +335,7 @@ func matchPlaceholderPrefix(key string, prefixes map[string]struct{}) string {
 // condition operator expects, plus a flag indicating whether we recognized
 // the operator at all. AWS allows two prefix modifiers (ForAllValues:,
 // ForAnyValue:) and one suffix (IfExists); we strip them before lookup.
-// The Null operator is special — it works on any type and returns ("", true)
+// The Null operator is special: it works on any type and returns ("", true)
 // so the caller can skip type validation without treating it as unknown.
 func operatorExpectedType(op string) (string, bool) {
 	op = strings.TrimPrefix(op, "ForAllValues:")
@@ -355,7 +351,7 @@ func operatorExpectedType(op string) (string, bool) {
 // opTypeTable maps each IAM condition operator (modifiers already stripped)
 // to the catalog "Types" value it expects. See the AWS IAM user guide,
 // "Condition operators" for the canonical list. Operators not in this
-// table are treated as unknown — the type check skips rather than
+// table are treated as unknown: the type check skips rather than
 // false-positive on AWS additions we haven't seen yet.
 var opTypeTable = map[string]string{
 	"StringEquals":              "String",
@@ -386,25 +382,25 @@ var opTypeTable = map[string]string{
 	"ArnNotLike":                "ARN",
 }
 
-// checkResources validates the Action × Resource cross-product in two
+// checkResources validates the Action/Resource cross-product in two
 // directions:
 //
 //  1. Resource-side: each Resource ARN must match at least one of the ARN
 //     templates declared by some action in the statement. Catches the
-//     classic "wrong shape" mistake — e.g. a bucket ARN given to a
-//     statement whose only action is s3:GetObject (object-only).
+//     "wrong shape" mistake, e.g. a bucket ARN given to a statement whose
+//     only action is s3:GetObject (object-only).
 //
 //  2. Action-side: each Action must have at least one Resource in the
-//     statement that matches its ARN templates. Catches the mirror
-//     mistake — a statement listing s3:ListBucket alongside s3:GetObject
-//     but supplying only an object ARN, leaving ListBucket orphaned.
+//     statement that matches its ARN templates. Catches the mirror mistake:
+//     a statement listing s3:ListBucket alongside s3:GetObject but supplying
+//     only an object ARN, leaving ListBucket orphaned.
 //
-// A bare "*" Resource short-circuits direction 2 entirely (it covers every
-// action). Wildcards on the Action side skip in the same pattern as
-// checkConditions: wildcard service prefix or bare "*" Action skips the
-// whole check; wildcard action name falls back to the service-wide union
-// of ARN formats. NotResource statements skip entirely — the listed
-// exclusions are the wrong domain to validate against.
+// A bare "*" Resource short-circuits direction 2 (it covers every action).
+// Wildcards on the Action side skip in the same pattern as checkConditions:
+// a wildcard service prefix or bare "*" Action skips the whole check; a
+// wildcard action name falls back to the service-wide union of ARN formats.
+// NotResource statements skip entirely, since the listed exclusions are the
+// wrong domain to validate against.
 //
 // Returns (issues, err) where err is ErrUnavailable.
 func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtIdx int) ([]string, error) {
@@ -424,18 +420,18 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 		token    string // original Action token, used for error messages
 		patterns []*regexp.Regexp
 		// skipDir2 marks actions that contribute to direction 1 (so the
-		// resource still has *something* to match against) but must not
-		// drive direction 2. Set for non-wildcard action names that the
-		// catalog doesn't actually expose: checkOne already reports them
-		// as unknown, and "action %q has no resource that matches its ARN
-		// format" would mislead — the action has no real ARN format here.
+		// resource still has something to match against) but must not drive
+		// direction 2. Set for non-wildcard action names the catalog does not
+		// expose: checkOne already reports them as unknown, and "action %q has
+		// no resource that matches its ARN format" would mislead, since the
+		// action has no real ARN format here.
 		skipDir2 bool
 	}
 	var perAction []actionEntry
 	// De-duplicate by lowercased action token. IAM actions are case-
-	// insensitive, so ["s3:ListBucket", "s3:listbucket"] (or the same
-	// spelling twice) address the same action — without this guard direction
-	// 2 would emit one redundant "has no resource" line per duplicate.
+	// insensitive, so ["s3:ListBucket", "s3:listbucket"] (or the same spelling
+	// twice) address the same action. Without this guard, direction 2 would
+	// emit one redundant "has no resource" line per duplicate.
 	seenAction := make(map[string]struct{})
 	resolvedAny := false
 	for _, a := range actions {
@@ -473,7 +469,7 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			// 2 mirrors the unknown-action carve-out below: with no real
 			// expansion there's no meaningful "ARN format" to complain
 			// about. Wildcards that DO match at least one action stay in
-			// direction 2 — their allArns view is a legitimate constraint.
+			// direction 2, since their allArns view is a legitimate constraint.
 			if !svc.matchesAny(name) {
 				skipDir2 = true
 			}
@@ -486,7 +482,7 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 			//      action separately; we use allArns so the unknown
 			//      action doesn't also drag a misleading "resource
 			//      doesn't match" error along with it. The action is also
-			//      excluded from direction 2 — a non-existent action has
+			//      excluded from direction 2: a non-existent action has
 			//      no "ARN format" to complain about.
 			//
 			//   2. The action is known but the service reference lists
@@ -508,15 +504,15 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 	}
 	if !resolvedAny {
 		// Every action was malformed or referenced an unknown service. The
-		// ARN itself may well be valid for the *intended* action; flagging
-		// it would just be a misleading second error. checkOne already
-		// reports the action-side problems.
+		// ARN may be valid for the intended action, so flagging it would just
+		// be a misleading second error. checkOne already reports the
+		// action-side problems.
 		return nil, nil
 	}
 
 	// Both directions need only "did at least one match happen?" answers,
-	// so two 1D bitmaps (resource-side, action-side) are enough — no full
-	// R×A matrix. The inner regex work is skipped for pairs where both
+	// so two 1D bitmaps (resource-side, action-side) are enough, with no full
+	// R-by-A matrix. The inner regex work is skipped for pairs where both
 	// bits are already set, which lets the worst case decay toward the old
 	// pooled-patterns loop in policies that are mostly well-formed.
 	resourceMatched := make([]bool, len(resources))
@@ -559,10 +555,10 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 
 	// Direction 2: every Action has at least one Resource it fits. Actions
 	// whose pattern set is empty (only possible with a service catalog that
-	// declares zero ARN formats — fake-test territory, not real AWS) or
-	// whose name doesn't actually exist in the catalog (skipDir2) are
-	// skipped to stay consistent with the "no info → don't double-flag"
-	// philosophy used by checkOne and the unknown-service path above.
+	// declares zero ARN formats, i.e. fake-test data, not real AWS) or whose
+	// name does not exist in the catalog (skipDir2) are skipped, to stay
+	// consistent with the "no info, do not double-flag" approach used by
+	// checkOne and the unknown-service path above.
 	for j, ae := range perAction {
 		if len(ae.patterns) == 0 || ae.skipDir2 || actionCovered[j] {
 			continue
@@ -575,20 +571,19 @@ func checkResources(ctx context.Context, c *Catalog, stmt map[string]any, stmtId
 	return issues, nil
 }
 
-// isOIDCConditionKey reports whether `key` has the shape of a dynamic
-// OIDC condition key — "<hostname>:<keyname>", where the hostname is an
-// RFC-1123 LDH domain name (two or more labels of [A-Za-z0-9] with
-// optional internal hyphens, separated by '.').
+// isOIDCConditionKey reports whether key has the shape of a dynamic OIDC
+// condition key, "<hostname>:<keyname>", where the hostname is an RFC-1123
+// LDH domain name (two or more labels of [A-Za-z0-9] with optional internal
+// hyphens, separated by '.').
 //
-// The helper deliberately recognizes only the single-colon hostname form.
-// Some IAM condition keys legitimately use multiple colons (KMS encryption
-// context keys like "kms:EncryptionContext:aws:s3:arn", for instance), but
-// those are catalog-listed and flow through the normal check. Restricting
-// this carve-out to one colon keeps it from masking typos that happen to
-// contain extra colons. The dot requirement (two labels minimum) is what
-// separates an OIDC key from a regular catalog key like "s3:GetObject" or
-// "sts:RoleSessionName"; the latter have no dot in the prefix and continue
-// to flow through the strict catalog check.
+// It recognizes only the single-colon hostname form. Some IAM condition keys
+// legitimately use multiple colons (KMS encryption context keys like
+// "kms:EncryptionContext:aws:s3:arn"), but those are catalog-listed and flow
+// through the normal check. Restricting this to one colon keeps it from
+// masking typos that contain extra colons. The dot requirement (two labels
+// minimum) separates an OIDC key from a regular catalog key like
+// "s3:GetObject" or "sts:RoleSessionName", which have no dot in the prefix
+// and flow through the strict catalog check.
 func isOIDCConditionKey(key string) bool {
 	if strings.Count(key, ":") != 1 {
 		return false
@@ -601,10 +596,10 @@ func isOIDCConditionKey(key string) bool {
 }
 
 // isLDHHostname reports whether host is a valid RFC-1123 LDH domain name
-// with at least two labels. Each label must be 1–63 chars long, contain
+// with at least two labels. Each label must be 1 to 63 chars long, contain
 // only [A-Za-z0-9-], and may not start or end with a hyphen. Empty labels
 // (consecutive dots) and leading/trailing dots are rejected. The empty
-// string falls through naturally — strings.Split("", ".") returns [""]
+// string falls through naturally: strings.Split("", ".") returns [""],
 // which has length 1 and fails the label-count guard.
 func isLDHHostname(host string) bool {
 	labels := strings.Split(host, ".")
