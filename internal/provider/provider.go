@@ -49,8 +49,8 @@ func (p *IAMEncodeProvider) Functions(_ context.Context) []func() function.Funct
 }
 
 // New returns a provider factory. The catalog endpoint can be overridden via
-// IAMENCODE_SERVICEREF_ENDPOINT — primarily a test seam, but also useful for
-// pointing at a proxy or AWS partition-specific mirror.
+// IAMENCODE_SERVICEREF_ENDPOINT, mainly a test seam but also useful for a proxy
+// or an AWS partition-specific mirror.
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &IAMEncodeProvider{

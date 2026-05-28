@@ -21,7 +21,7 @@ import (
 // many times each path was hit, so tests can assert caching/singleflight.
 type fakeServer struct {
 	server *httptest.Server
-	hits   sync.Map // path → *atomic.Int64
+	hits   sync.Map // path -> *atomic.Int64
 }
 
 func newFakeServer(t *testing.T, services map[string][]string) *fakeServer {
@@ -74,13 +74,13 @@ func newFakeServer(t *testing.T, services map[string][]string) *fakeServer {
 // tests. Every field is optional; absent or empty maps serialize as empty
 // JSON arrays, which the catalog parser handles identically to truly absent.
 type fakeServiceData struct {
-	actions            map[string][]string            // action → ActionConditionKeys
-	actionResources    map[string][]string            // action → list of Resources[].Name
-	actionResourceKeys map[string]map[string][]string // action → resource type → Actions[].Resources[].ConditionKeys
+	actions            map[string][]string            // action -> ActionConditionKeys
+	actionResources    map[string][]string            // action -> list of Resources[].Name
+	actionResourceKeys map[string]map[string][]string // action -> resource type -> Actions[].Resources[].ConditionKeys
 	svcConditionKeys   []string                       // service-level ConditionKeys[] names
-	svcKeyTypes        map[string]string              // optional: key name → declared type (e.g. "Numeric")
-	resources          map[string][]string            // resource type → ARN format templates
-	resourceKeys       map[string][]string            // resource type → top-level Resources[].ConditionKeys
+	svcKeyTypes        map[string]string              // optional: key name -> declared type (e.g. "Numeric")
+	resources          map[string][]string            // resource type -> ARN format templates
+	resourceKeys       map[string][]string            // resource type -> top-level Resources[].ConditionKeys
 }
 
 func newFakeServerWithKeys(t *testing.T, services map[string]fakeServiceData) *fakeServer {
@@ -262,7 +262,7 @@ func TestCatalog_Lookup_ServiceJSONUnavailable(t *testing.T) {
 }
 
 func TestCatalog_Lookup_IndexErrorIsSticky(t *testing.T) {
-	// Once the index fetch fails, subsequent calls must not retry — they would
+	// Once the index fetch fails, subsequent calls must not retry, since they would
 	// repeatedly stall every plan when the endpoint is unreachable. The first
 	// failure latches and all later Lookups return ErrUnavailable immediately.
 	var hits atomic.Int64
@@ -329,8 +329,8 @@ func TestCatalog_New_TrimsTrailingSlash(t *testing.T) {
 
 func TestCatalog_Lookup_CallerCancel_DoesNotPoisonCache(t *testing.T) {
 	// Under singleflight, the first caller's ctx used to be threaded into the
-	// HTTP fetch — cancel that ctx and every coalesced caller would see the
-	// failure AND it would be cached forever. The fix routes the fetch through
+	// HTTP fetch. Canceling that ctx would make every coalesced caller see the
+	// failure, and it would be cached forever. The fix routes the fetch through
 	// a fresh context.Background(); this test asserts the contract by
 	// canceling the first caller mid-flight and verifying a fresh Lookup still
 	// succeeds.
@@ -378,7 +378,7 @@ func TestCatalog_Lookup_RejectsOversizedResponse(t *testing.T) {
 	})
 	mux.HandleFunc("/v1/s3/s3.json", func(w http.ResponseWriter, _ *http.Request) {
 		// Opens a JSON array, then floods the reader past the limit with
-		// padding that is also valid JSON whitespace — so decoding finishes
+		// padding that is also valid JSON whitespace, so decoding finishes
 		// (without seeing the closing bracket) with unexpected EOF.
 		_, _ = w.Write([]byte("["))
 		junk := bytes.Repeat([]byte(" "), 1<<20)
@@ -393,7 +393,7 @@ func TestCatalog_Lookup_RejectsOversizedResponse(t *testing.T) {
 }
 
 func TestService_HasAction_NilReceiver(t *testing.T) {
-	// Nil-safe so callers can blindly chain Default.Lookup() → svc.HasAction()
+	// Nil-safe so callers can chain Lookup() -> svc.HasAction()
 	// without a separate nil check after a successful return.
 	var s *iamcatalog.Service
 	assert.False(t, s.HasAction("anything"))
@@ -406,7 +406,7 @@ func TestCatalog_Lookup_InvalidURLInIndex(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		// Control character in URL → http.NewRequestWithContext rejects it.
+		// Control character in URL: http.NewRequestWithContext rejects it.
 		fmt.Fprintf(w, `[{"service":"s3","url":"http://example%c.test/"}]`, 0x01)
 	})
 	c := iamcatalog.New(srv.URL)

@@ -39,11 +39,11 @@ func formatError(v any, ve *jsonschema.ValidationError) string {
 	return "\n" + strings.Join(blocks, "\n\n")
 }
 
-// resolvedLeaf is a ValidationError paired with the InstanceLocation we want
-// to report. We compute the path during traversal because some leaves (most
-// notably kind.PropertyNames) reset their own InstanceLocation to empty —
-// the library treats the property *name* as the instance, leaving us to
-// stitch the parent location and the property name together.
+// resolvedLeaf is a ValidationError paired with the InstanceLocation to
+// report. The path is computed during traversal because some leaves (most
+// notably kind.PropertyNames) reset their own InstanceLocation to empty: the
+// library treats the property name as the instance, so we stitch the parent
+// location and the property name together.
 type resolvedLeaf struct {
 	path  []string
 	err   *jsonschema.ValidationError
@@ -51,11 +51,11 @@ type resolvedLeaf struct {
 }
 
 // collectLeaves descends the error tree. For grouping nodes (oneOf/anyOf/allOf
-// and friends) it keeps only the cause(s) whose subtree reaches the deepest
-// InstanceLocation — that branch almost always matches the user's intended
-// shape and skips noise like "got array, want object" for an array that the
-// schema also allows. parentPath threads the last non-empty InstanceLocation
-// down so propertyNames leaves can resolve to a usable path.
+// and the like) it keeps only the cause(s) whose subtree reaches the deepest
+// InstanceLocation: that branch almost always matches the user's intended
+// shape and skips noise like "got array, want object" for an array the schema
+// also allows. parentPath threads the last non-empty InstanceLocation down so
+// propertyNames leaves can resolve to a usable path.
 func collectLeaves(e *jsonschema.ValidationError, parentPath []string) []*resolvedLeaf {
 	effective := parentPath
 	if len(e.InstanceLocation) > 0 {
@@ -158,7 +158,7 @@ func leafMessage(e *jsonschema.ValidationError) string {
 	if pn, ok := e.ErrorKind.(*kind.PropertyNames); ok {
 		msg := fmt.Sprintf("invalid property name %q", pn.Property)
 		if hint := didYouMean(pn.Property, e); hint != "" {
-			msg += " — " + hint
+			msg += ": " + hint
 		}
 		return msg
 	}
@@ -231,7 +231,7 @@ func formatEnumMessage(x *kind.Enum) string {
 	msg := fmt.Sprintf("value must be one of %s, and %d more (got %s)", shown, len(want)-enumDisplayLimit, got)
 	if gs, ok := x.Got.(string); ok {
 		if best := closestEnumString(gs, x.Want); best != "" {
-			msg += fmt.Sprintf(" — did you mean %q?", best)
+			msg += fmt.Sprintf(": did you mean %q?", best)
 		}
 	}
 	return msg
@@ -263,7 +263,7 @@ func findEnumCause(e *jsonschema.ValidationError) *kind.Enum {
 }
 
 // closestEnumString returns the option closest to got by Levenshtein distance.
-// Returns "" when nothing in want is within a length-relative threshold —
+// Returns "" when nothing in want is within a length-relative threshold, since
 // suggesting a wildly different string is more confusing than helpful.
 func closestEnumString(got string, want []any) string {
 	best := ""

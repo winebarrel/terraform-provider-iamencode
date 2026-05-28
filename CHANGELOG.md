@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.8.1] - 2026-05-28
+
+- Reword the `policy_strict` function description and simplify validation error messages. No behavior change.
+
 ## [1.8.0] - 2026-05-27
 
 - Revert the 1.7.0 default-output change. `policy` / `policy_strict` produce minified one-line JSON again (via `json.Marshal`), matching `jsonencode` and the `minified_json` attribute of `aws_iam_policy_document`. To get indented JSON, run the result through `jsondecode(...)` and re-format it.

@@ -18,7 +18,7 @@ import (
 )
 
 // fakeCatalog returns a Catalog backed by an httptest server with the given
-// services and actions. Each test owns its own instance — no global state.
+// services and actions. Each test owns its own instance, no global state.
 func fakeCatalog(t *testing.T, services map[string][]string) *iamcatalog.Catalog {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -118,11 +118,11 @@ func TestPolicyStrictFunction_Err_UnknownService(t *testing.T) {
 	assert.Contains(t, resp.Error.Error(), "s3xx")
 }
 
-// Schema failure must short-circuit before the catalog check — otherwise we'd
+// Schema failure must short-circuit before the catalog check, otherwise we'd
 // chase an Action typo on a policy whose Effect was misspelled.
 func TestPolicyStrictFunction_Err_SchemaFailsBeforeCatalog(t *testing.T) {
 	cat := fakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
-	// Effect = "Allowx" — schema rejects it.
+	// Effect = "Allowx": schema rejects it.
 	stmt, diags := basetypes.NewObjectValue(
 		map[string]attr.Type{
 			"Effect": basetypes.StringType{},
@@ -175,7 +175,7 @@ func TestPolicyStrictFunction_Err_UnsupportedValue(t *testing.T) {
 	assert.Contains(t, resp.Error.Error(), "unsupported terraform value type")
 }
 
-// HCL number literals can overflow float64 to ±Inf, which json.Marshal
+// HCL number literals can overflow float64 to +/-Inf, which json.Marshal
 // refuses. The function must surface that as a function error instead of
 // silently emitting truncated output.
 func TestPolicyStrictFunction_Err_MarshalFailsOnInfinity(t *testing.T) {
@@ -183,7 +183,7 @@ func TestPolicyStrictFunction_Err_MarshalFailsOnInfinity(t *testing.T) {
 	bf, _, err := big.ParseFloat("1e1000", 10, 53, big.ToNearestEven)
 	require.NoError(t, err)
 
-	// Use an aws:* key — the strict catalog accepts all aws-prefixed globals,
+	// Use an aws:* key: the strict catalog accepts all aws-prefixed globals,
 	// so the condition-key check passes and we reach the json.Marshal step.
 	condInner, diags := basetypes.NewObjectValue(
 		map[string]attr.Type{"aws:EpochTime": basetypes.NumberType{}},

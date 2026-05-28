@@ -13,9 +13,9 @@ import (
 
 var _ function.Function = PolicyStrictFunction{}
 
-// PolicyStrictFunction carries the catalog instance it consults, rather than
-// reaching for a package-level singleton. The provider hands it in when
-// registering the function; tests construct it directly with a fake catalog.
+// PolicyStrictFunction holds the catalog it consults instead of a package-level
+// singleton. The provider injects it when registering the function; tests
+// construct it directly with a fake catalog.
 type PolicyStrictFunction struct {
 	catalog *iamcatalog.Catalog
 }
@@ -27,40 +27,38 @@ func (r PolicyStrictFunction) Metadata(_ context.Context, _ function.MetadataReq
 func (r PolicyStrictFunction) Definition(_ context.Context, _ function.DefinitionRequest, resp *function.DefinitionResponse) {
 	resp.Definition = function.Definition{
 		Summary: "policy_strict function",
-		MarkdownDescription: "Like `policy`, but additionally validates the policy against the live " +
+		MarkdownDescription: "Like `policy`, but also validates the policy against the live " +
 			"[AWS service reference](https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html). " +
-			"Four extra checks run on top of the JSON Schema:\n\n" +
-			"1. Non-wildcard `Action` / `NotAction` values (e.g. `s3:GetObject`) must name a real service and a real " +
-			"action — this is what catches typos like `s3:Frobnicate`. Wildcard patterns within the action name " +
-			"(e.g. `s3:Get*`, `s3:G?tObject`) are expanded against the service's real action list and must match " +
-			"at least one action, so something like `s3:Frobni*` is also flagged. The bare `*` and wildcard service " +
-			"prefixes (`*:GetObject`) are accepted without catalog lookup because they would require fetching every " +
-			"AWS service catalog to expand.\n" +
-			"2. Every key inside `Condition` must be one that the statement's actions actually consume. Keys with the `aws:` " +
-			"prefix are AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is " +
-			"accepted on `s3:ListBucket` but rejected on `s3:GetObject`). When an action's name is itself a wildcard " +
-			"(e.g. `s3:*`, `s3:Get*`), the check falls back to the service-wide union of condition keys; statements " +
-			"whose service prefix is a wildcard (e.g. `*:GetObject`) or whose Action is the bare `*` skip the condition " +
-			"check entirely because the keyspace can't be narrowed.\n" +
-			"3. Each `Condition` operator must match its key's declared type. For example `s3:max-keys` is a numeric " +
-			"condition key, so using it under `StringEquals` is flagged — only `NumericEquals` / `NumericLessThan` / etc. " +
-			"are valid. Operator modifiers `ForAllValues:`, `ForAnyValue:`, and the `IfExists` suffix are stripped before " +
-			"the lookup. The `Null` operator works on any key type. `aws:*` keys skip the type check (the catalog does " +
-			"not publish their types).\n" +
-			"4. Every `Resource` ARN must match one of the ARN templates declared for at least one of the statement's " +
-			"actions. This catches mismatches like a bucket-only ARN (`arn:aws:s3:::my-bucket`) on `s3:GetObject` — that " +
-			"action only operates on object ARNs (`.../my-bucket/key`). The bare `*` Resource always passes; the same " +
-			"wildcard rules from check (2) apply to the action list. `NotResource` statements skip the check entirely. " +
-			"Known limitation: a handful of services use resource names that legitimately contain `/` even though their " +
-			"AWS-declared ARN templates have no literal `/` — CloudWatch Logs log-group names (`/aws/lambda/foo`) are the " +
-			"canonical case. Such ARNs will be flagged; use `Resource = \"*\"` or a wildcard in the ARN as a workaround.\n\n" +
-			"Service prefixes and action names are fetched lazily on first use and cached in memory for the lifetime of the " +
-			"provider process; a single plan therefore makes at most one HTTP call per referenced service. " +
-			"If the reference endpoint is unreachable the function fails — strict mode never silently passes a policy it " +
-			"couldn't actually verify. Use `policy` instead when strict catalog validation isn't desired.\n\n" +
-			"The endpoint defaults to `https://servicereference.us-east-1.amazonaws.com` and can be overridden by setting " +
-			"the `IAMENCODE_SERVICEREF_ENDPOINT` environment variable when Terraform is run — useful for pointing at a " +
-			"corporate mirror or, in tests, a local fake.",
+			"Four checks run on top of the JSON Schema:\n\n" +
+			"1. Non-wildcard `Action` / `NotAction` values (such as `s3:GetObject`) must name a real service and action. " +
+			"This catches typos like `s3:Frobnicate`. Wildcard patterns in the action name (`s3:Get*`, `s3:G?tObject`) are " +
+			"expanded against the service's action list and must match at least one action, so `s3:Frobni*` is flagged too. " +
+			"The bare `*` and wildcard service prefixes (`*:GetObject`) are accepted without a catalog lookup, because " +
+			"expanding them would require fetching every AWS service.\n" +
+			"2. Every key inside `Condition` must be valid for the statement's actions. Keys with the `aws:` prefix are " +
+			"AWS-global and always allowed; service-specific keys are looked up per action (so `s3:prefix` is allowed on " +
+			"`s3:ListBucket` but rejected on `s3:GetObject`). A wildcard action name (`s3:*`, `s3:Get*`) falls back to the " +
+			"service-wide set of condition keys. A wildcard service prefix (`*:GetObject`) or the bare `*` Action skips the " +
+			"check, because the keyspace cannot be narrowed.\n" +
+			"3. Each `Condition` operator must match its key's declared type. For example `s3:max-keys` is numeric, so " +
+			"using it under `StringEquals` is flagged; only `NumericEquals`, `NumericLessThan`, and the like are valid. " +
+			"The `ForAllValues:` / `ForAnyValue:` prefixes and the `IfExists` suffix are stripped before lookup. The " +
+			"`Null` operator works on any type. `aws:*` keys skip the type check, since the catalog does not publish " +
+			"their types.\n" +
+			"4. Every `Resource` ARN must match an ARN template of at least one of the statement's actions. This catches " +
+			"mismatches such as a bucket-only ARN (`arn:aws:s3:::my-bucket`) on `s3:GetObject`, which operates only on " +
+			"object ARNs (`.../my-bucket/key`). The bare `*` Resource always passes, and the wildcard rules from check 2 " +
+			"apply to the action list. `NotResource` statements skip the check. Known limitation: a few services use " +
+			"resource names that contain `/` even though their ARN templates have no literal `/`; CloudWatch Logs " +
+			"log-group names (`/aws/lambda/foo`) are the main case. Such ARNs are flagged; use `Resource = \"*\"` or a " +
+			"wildcard in the ARN as a workaround.\n\n" +
+			"Service prefixes and action names are fetched on first use and cached for the lifetime of the provider " +
+			"process, so a single plan makes at most one HTTP call per referenced service. If the reference endpoint is " +
+			"unreachable, the function fails rather than passing the policy unchecked. Use `policy` when catalog " +
+			"validation is not wanted.\n\n" +
+			"The endpoint defaults to `https://servicereference.us-east-1.amazonaws.com` and can be overridden with the " +
+			"`IAMENCODE_SERVICEREF_ENDPOINT` environment variable, which is useful for a corporate mirror or a local fake " +
+			"in tests.",
 		Parameters: []function.Parameter{
 			function.DynamicParameter{
 				Name:                "policy",

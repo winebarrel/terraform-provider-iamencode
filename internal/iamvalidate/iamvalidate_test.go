@@ -66,7 +66,7 @@ func TestValidate_DuplicateSid_Message(t *testing.T) {
 	assert.Contains(t, err.Error(), "Statement[0]")
 }
 
-// Empty Sids are exempt — they may appear on multiple statements.
+// Empty Sids are exempt: they may appear on multiple statements.
 func TestValidate_EmptySid_AllowsDuplicates(t *testing.T) {
 	policy := map[string]any{
 		"Version": "2012-10-17",
