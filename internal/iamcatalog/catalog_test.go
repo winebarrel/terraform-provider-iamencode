@@ -537,7 +537,9 @@ func TestCatalog_Lookup_InvalidURLInIndex(t *testing.T) {
 	t.Cleanup(srv.Close)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		// Control character in URL: http.NewRequestWithContext rejects it.
-		fmt.Fprintf(w, `[{"service":"s3","url":"http://example%c.test/"}]`, 0x01)
+		// JSON-escaped (\u0001) so the index itself decodes fine and the
+		// failure happens at request build time, not at JSON decode time.
+		fmt.Fprint(w, `[{"service":"s3","url":"http://example\u0001.test/"}]`)
 	})
 	c := iamcatalog.New(srv.URL)
 	_, err := c.Lookup(context.Background(), "s3")
