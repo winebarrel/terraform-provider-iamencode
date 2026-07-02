@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.9.0] - 2026-07-02
+
+- `policy_strict`: retry transient service reference fetch failures (HTTP 429/5xx and network errors) up to 3 attempts with exponential backoff. Previously a single 503 failed the function immediately. Other 4xx statuses and malformed responses still fail on the first attempt.
+
 ## [1.8.1] - 2026-05-28
 
 - Reword the `policy_strict` function description and simplify validation error messages. No behavior change.

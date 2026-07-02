@@ -31,7 +31,18 @@ const (
 	// (ec2) is ~800 KB today; 16 MB is generous headroom while still blunting
 	// a hostile or misconfigured endpoint set via IAMENCODE_SERVICEREF_ENDPOINT.
 	maxResponseBytes = 16 << 20
+	// maxFetchAttempts bounds the total tries a single getJSON call makes
+	// against the endpoint when the failure looks transient (HTTP 429/5xx or
+	// a network error). Once exhausted, the failure surfaces as ErrUnavailable
+	// and Lookup caches it, so the retry budget is paid at most once per
+	// service per process.
+	maxFetchAttempts = 3
 )
+
+// retryBaseDelay is the backoff before the second attempt; it doubles for
+// each further retry (base, 2*base, ...). A var, not a const, so tests can
+// shrink it instead of sleeping for real.
+var retryBaseDelay = 500 * time.Millisecond
 
 var (
 	// ErrUnknownService: the prefix is not present in the AWS service index,
@@ -41,8 +52,9 @@ var (
 	ErrUnknownService = errors.New("unknown AWS service prefix")
 
 	// ErrUnavailable: the catalog could not be fetched (network down, timeout,
-	// HTTP 4xx/5xx, malformed response). It is a sentinel; handling is up to
-	// the caller. CheckPolicy surfaces it as a hard error rather than passing
+	// HTTP 4xx/5xx, malformed response). Transient failures are retried with
+	// backoff inside getJSON before this surfaces. It is a sentinel; handling
+	// is up to the caller. CheckPolicy surfaces it as a hard error rather than passing
 	// a policy it could not verify, but a future caller could choose to skip
 	// catalog-based checks on ErrUnavailable instead. Do not assume one
 	// behavior here.
@@ -584,21 +596,51 @@ func arnPlaceholderPattern(tmpl string, p [2]int, idx, lastIdx int, siblings []s
 	return "[^:]*(?::[*?])*"
 }
 
+// getJSON fetches url and decodes the JSON response into out. Transient
+// failures (network errors and HTTP 429/5xx responses) are retried up to
+// maxFetchAttempts total attempts with exponential backoff. Anything else --
+// another 4xx status, a request that cannot be built, a body that decodes
+// wrong -- fails immediately: those reflect a real mismatch, not a blip, and
+// retrying would only stall the plan. Decoding into out happens at most once
+// (only on a 200), so a retried call never leaves out partially filled.
 func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {
+	for attempt := 1; ; attempt++ {
+		retryable, err := c.getJSONOnce(ctx, url, out)
+		if err == nil || !retryable || attempt == maxFetchAttempts {
+			return err
+		}
+		// time.After without Stop is fine here: since Go 1.23 an
+		// unreferenced timer is collectible before it fires.
+		select {
+		case <-ctx.Done():
+			// Join rather than pick one: the fetch error says why the retry
+			// was pending, ctx.Err() says why it stopped; both stay visible
+			// to errors.Is.
+			return errors.Join(err, ctx.Err())
+		case <-time.After(retryBaseDelay << (attempt - 1)):
+		}
+	}
+}
+
+func (c *Catalog) getJSONOnce(ctx context.Context, url string, out any) (retryable bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	body := io.LimitReader(resp.Body, maxResponseBytes)
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, body)
-		return fmt.Errorf("http %d", resp.StatusCode)
+		return isRetryableStatus(resp.StatusCode), fmt.Errorf("http %d", resp.StatusCode)
 	}
-	return json.NewDecoder(body).Decode(out)
+	return false, json.NewDecoder(body).Decode(out)
+}
+
+func isRetryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
 }

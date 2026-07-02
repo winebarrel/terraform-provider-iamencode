@@ -53,9 +53,10 @@ func (r PolicyStrictFunction) Definition(_ context.Context, _ function.Definitio
 			"log-group names (`/aws/lambda/foo`) are the main case. Such ARNs are flagged; use `Resource = \"*\"` or a " +
 			"wildcard in the ARN as a workaround.\n\n" +
 			"Service prefixes and action names are fetched on first use and cached for the lifetime of the provider " +
-			"process, so a single plan makes at most one HTTP call per referenced service. If the reference endpoint is " +
-			"unreachable, the function fails rather than passing the policy unchecked. Use `policy` when catalog " +
-			"validation is not wanted.\n\n" +
+			"process, so a single plan fetches each referenced service at most once. Transient failures of that fetch " +
+			"(HTTP 429/5xx and network errors) are retried up to 3 attempts with exponential backoff. If the reference " +
+			"endpoint is still unreachable after that, the function fails rather than passing the policy unchecked. " +
+			"Use `policy` when catalog validation is not wanted.\n\n" +
 			"The endpoint defaults to `https://servicereference.us-east-1.amazonaws.com` and can be overridden with the " +
 			"`IAMENCODE_SERVICEREF_ENDPOINT` environment variable, which is useful for a corporate mirror or a local fake " +
 			"in tests.",

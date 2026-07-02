@@ -195,6 +195,13 @@ func (fs *fakeServer) count(path string) int64 {
 	return v.(*atomic.Int64).Load()
 }
 
+// fastRetries shrinks the retry backoff so tests that exercise the retry
+// path do not sleep for real. Restored on cleanup.
+func fastRetries(t *testing.T) {
+	t.Helper()
+	t.Cleanup(iamcatalog.SetRetryBaseDelay(time.Millisecond))
+}
+
 func TestCatalog_Lookup_OK(t *testing.T) {
 	fs := newFakeServer(t, map[string][]string{
 		"s3": {"GetObject", "PutObject", "ListBucket"},
@@ -235,6 +242,7 @@ func TestCatalog_Lookup_CaseInsensitivePrefix(t *testing.T) {
 }
 
 func TestCatalog_Lookup_IndexUnavailable(t *testing.T) {
+	fastRetries(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
@@ -261,10 +269,131 @@ func TestCatalog_Lookup_ServiceJSONUnavailable(t *testing.T) {
 	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 }
 
+func TestCatalog_Lookup_RetriesTransientIndexError(t *testing.T) {
+	// A 503 from the index is retried with backoff within the same Lookup;
+	// once the endpoint recovers, the call succeeds without surfacing an error.
+	fastRetries(t)
+	var indexHits atomic.Int64
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		if indexHits.Add(1) < iamcatalog.MaxFetchAttempts {
+			http.Error(w, "throttled", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprintf(w, `[{"service":"s3","url":%q}]`, srv.URL+"/v1/s3/s3.json")
+	})
+	mux.HandleFunc("/v1/s3/s3.json", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"Name":"s3","Actions":[{"Name":"GetObject"}]}`)
+	})
+	c := iamcatalog.New(srv.URL)
+	svc, err := c.Lookup(context.Background(), "s3")
+	require.NoError(t, err)
+	assert.True(t, svc.HasAction("GetObject"))
+	assert.Equal(t, int64(iamcatalog.MaxFetchAttempts), indexHits.Load())
+}
+
+func TestCatalog_Lookup_RetriesTransientServiceError(t *testing.T) {
+	// Same as above but for the per-service fetch: two 503s, then success.
+	fastRetries(t)
+	var svcHits atomic.Int64
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"service":"s3","url":%q}]`, srv.URL+"/v1/s3/s3.json")
+	})
+	mux.HandleFunc("/v1/s3/s3.json", func(w http.ResponseWriter, _ *http.Request) {
+		if svcHits.Add(1) < iamcatalog.MaxFetchAttempts {
+			http.Error(w, "throttled", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `{"Name":"s3","Actions":[{"Name":"GetObject"}]}`)
+	})
+	c := iamcatalog.New(srv.URL)
+	svc, err := c.Lookup(context.Background(), "s3")
+	require.NoError(t, err)
+	assert.True(t, svc.HasAction("GetObject"))
+	assert.Equal(t, int64(iamcatalog.MaxFetchAttempts), svcHits.Load())
+}
+
+func TestCatalog_Lookup_RetryGivesUpAfterMaxAttempts(t *testing.T) {
+	// A persistent 503 exhausts the retry budget and surfaces ErrUnavailable;
+	// the endpoint is hit exactly maxFetchAttempts times, not forever.
+	fastRetries(t)
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	c := iamcatalog.New(srv.URL)
+	_, err := c.Lookup(context.Background(), "s3")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
+	assert.Equal(t, int64(iamcatalog.MaxFetchAttempts), hits.Load())
+}
+
+func TestCatalog_Lookup_NoRetryOnNonTransientStatus(t *testing.T) {
+	// 4xx statuses other than 429 reflect a real mismatch (wrong URL, gone
+	// resource), not a blip; they must fail on the first attempt.
+	fastRetries(t)
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	c := iamcatalog.New(srv.URL)
+	_, err := c.Lookup(context.Background(), "s3")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
+	assert.Equal(t, int64(1), hits.Load(), "non-transient status must not be retried")
+}
+
+func TestCatalog_GetJSON_CancelDuringBackoff(t *testing.T) {
+	// Cancellation during the backoff wait must surface both halves: the
+	// pending fetch error (why a retry was scheduled) and ctx.Err (why it
+	// stopped), joined so errors.Is can see either. Lookup always passes
+	// context.Background(), so this drives getJSON via the test seam.
+	t.Cleanup(iamcatalog.SetRetryBaseDelay(time.Minute)) // park the retry in backoff
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	c := iamcatalog.New(srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		var out any
+		done <- c.GetJSON(ctx, srv.URL+"/", &out)
+	}()
+	// Wait for the first attempt to complete so the goroutine is parked in
+	// the backoff select, then cancel.
+	require.Eventually(t, func() bool { return hits.Load() >= 1 }, 5*time.Second, time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.ErrorContains(t, err, "http 503")
+	case <-time.After(5 * time.Second):
+		t.Fatal("getJSON did not return after ctx cancellation")
+	}
+	assert.Equal(t, int64(1), hits.Load(), "no second attempt after cancellation")
+}
+
 func TestCatalog_Lookup_IndexErrorIsSticky(t *testing.T) {
-	// Once the index fetch fails, subsequent calls must not retry, since they would
-	// repeatedly stall every plan when the endpoint is unreachable. The first
-	// failure latches and all later Lookups return ErrUnavailable immediately.
+	// The retry budget for a transient failure is spent inside the first
+	// fetch (maxFetchAttempts tries with backoff). Once exhausted, the failure
+	// latches: subsequent Lookups must not refetch, since that would
+	// repeatedly stall every plan when the endpoint is down for good.
+	fastRetries(t)
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
@@ -276,7 +405,8 @@ func TestCatalog_Lookup_IndexErrorIsSticky(t *testing.T) {
 		_, err := c.Lookup(context.Background(), "s3")
 		assert.ErrorIs(t, err, iamcatalog.ErrUnavailable)
 	}
-	assert.Equal(t, int64(1), hits.Load(), "index should only be fetched once even after failure")
+	assert.Equal(t, int64(iamcatalog.MaxFetchAttempts), hits.Load(),
+		"one round of retries on the first Lookup, then the failure latches")
 }
 
 func TestCatalog_Lookup_ConcurrentSingleflight(t *testing.T) {
@@ -407,7 +537,9 @@ func TestCatalog_Lookup_InvalidURLInIndex(t *testing.T) {
 	t.Cleanup(srv.Close)
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		// Control character in URL: http.NewRequestWithContext rejects it.
-		fmt.Fprintf(w, `[{"service":"s3","url":"http://example%c.test/"}]`, 0x01)
+		// JSON-escaped (\u0001) so the index itself decodes fine and the
+		// failure happens at request build time, not at JSON decode time.
+		fmt.Fprint(w, `[{"service":"s3","url":"http://example\u0001.test/"}]`)
 	})
 	c := iamcatalog.New(srv.URL)
 	_, err := c.Lookup(context.Background(), "s3")
