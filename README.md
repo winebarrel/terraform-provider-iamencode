@@ -83,9 +83,9 @@ output "policy_strict" {
 
 ### `policy_strict` notes
 
-- Fetches `https://servicereference.us-east-1.amazonaws.com` once per service per provider process. A single `terraform plan` makes at most one HTTP call per referenced service.
+- Fetches `https://servicereference.us-east-1.amazonaws.com` once per service per provider process. A single `terraform plan` fetches each referenced service at most once (a transient failure can add up to 2 retry attempts, see below).
 - The endpoint can be overridden with the `IAMENCODE_SERVICEREF_ENDPOINT` environment variable, which is useful for corporate mirrors or testing.
-- Transient fetch failures (HTTP 429/5xx and network errors) are retried up to 3 times with exponential backoff. If the catalog endpoint is still unreachable after that, `policy_strict` fails rather than passing the policy unchecked. Use `policy` in airgapped environments.
+- Transient fetch failures (HTTP 429/5xx and network errors) are retried with exponential backoff, up to 3 attempts in total. If the catalog endpoint is still unreachable after that, `policy_strict` fails rather than passing the policy unchecked. Use `policy` in airgapped environments.
 - Wildcard service prefixes (`*:GetObject`) and the bare `*` action skip the catalog checks, because expanding them would require fetching every AWS service.
 - `NotAction` / `NotResource` statements skip the action and resource-ARN checks, because the inverted set has no fixed list to check against.
 - Known limitation: a few resource ARNs whose templates lack a literal `/` but whose actual values contain `/` (CloudWatch Logs log-group names such as `/aws/lambda/foo`) get flagged. Use `Resource = "*"` or a wildcard ARN as a workaround.
