@@ -609,15 +609,15 @@ func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {
 		if err == nil || !retryable || attempt == maxFetchAttempts {
 			return err
 		}
-		t := time.NewTimer(retryBaseDelay << (attempt - 1))
+		// time.After without Stop is fine here: since Go 1.23 an
+		// unreferenced timer is collectible before it fires.
 		select {
 		case <-ctx.Done():
-			t.Stop()
 			// Join rather than pick one: the fetch error says why the retry
 			// was pending, ctx.Err() says why it stopped; both stay visible
 			// to errors.Is.
 			return errors.Join(err, ctx.Err())
-		case <-t.C:
+		case <-time.After(retryBaseDelay << (attempt - 1)):
 		}
 	}
 }
