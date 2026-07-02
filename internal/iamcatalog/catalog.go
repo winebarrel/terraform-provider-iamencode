@@ -613,7 +613,10 @@ func (c *Catalog) getJSON(ctx context.Context, url string, out any) error {
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return err
+			// Join rather than pick one: the fetch error says why the retry
+			// was pending, ctx.Err() says why it stopped; both stay visible
+			// to errors.Is.
+			return errors.Join(err, ctx.Err())
 		case <-t.C:
 		}
 	}

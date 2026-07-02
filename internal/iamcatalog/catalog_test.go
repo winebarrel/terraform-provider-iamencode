@@ -352,6 +352,42 @@ func TestCatalog_Lookup_NoRetryOnNonTransientStatus(t *testing.T) {
 	assert.Equal(t, int64(1), hits.Load(), "non-transient status must not be retried")
 }
 
+func TestCatalog_GetJSON_CancelDuringBackoff(t *testing.T) {
+	// Cancellation during the backoff wait must surface both halves: the
+	// pending fetch error (why a retry was scheduled) and ctx.Err (why it
+	// stopped), joined so errors.Is can see either. Lookup always passes
+	// context.Background(), so this drives getJSON via the test seam.
+	t.Cleanup(iamcatalog.SetRetryBaseDelay(time.Minute)) // park the retry in backoff
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	c := iamcatalog.New(srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		var out any
+		done <- c.GetJSON(ctx, srv.URL+"/", &out)
+	}()
+	// Wait for the first attempt to complete so the goroutine is parked in
+	// the backoff select, then cancel.
+	require.Eventually(t, func() bool { return hits.Load() >= 1 }, 5*time.Second, time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.ErrorContains(t, err, "http 503")
+	case <-time.After(5 * time.Second):
+		t.Fatal("getJSON did not return after ctx cancellation")
+	}
+	assert.Equal(t, int64(1), hits.Load(), "no second attempt after cancellation")
+}
+
 func TestCatalog_Lookup_IndexErrorIsSticky(t *testing.T) {
 	// The retry budget for a transient failure is spent inside the first
 	// fetch (maxFetchAttempts tries with backoff). Once exhausted, the failure
