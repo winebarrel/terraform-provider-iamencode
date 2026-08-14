@@ -3,7 +3,7 @@
 [![CI](https://github.com/winebarrel/terraform-provider-iamencode/actions/workflows/ci.yml/badge.svg)](https://github.com/winebarrel/terraform-provider-iamencode/actions/workflows/ci.yml)
 [![terraform docs](https://img.shields.io/badge/terraform-docs-%35835CC?logo=terraform)](https://registry.terraform.io/providers/winebarrel/iamencode/latest/docs)
 [![codecov](https://codecov.io/gh/winebarrel/terraform-provider-iamencode/graph/badge.svg?token=Edpy75fnRI)](https://codecov.io/gh/winebarrel/terraform-provider-iamencode)
-[![AI Generated](https://img.shields.io/badge/AI%20Generated-Claude-orange?logo=anthropic)](https://claude.ai/claude-code)
+[![AI Generated](https://img.shields.io/badge/AI%20Generated-Claude-orange?logo=anthropic)](https://claude.com/claude-code)
 
 A Terraform provider with user-defined functions that validate an IAM policy document (passed as a Terraform object) and return it as a JSON string. It provides two functions:
 
