@@ -175,16 +175,17 @@ func TestPolicyStrictFunction_Err_UnsupportedValue(t *testing.T) {
 	assert.Contains(t, resp.Error.Error(), "unsupported terraform value type")
 }
 
-// HCL number literals can overflow float64 to +/-Inf, which json.Marshal
-// refuses. The function must surface that as a function error instead of
-// silently emitting truncated output.
+// HCL number literals can overflow float64 to +/-Inf. jsonschema now rejects
+// NaN/Inf during validation, so the function must surface that as a function
+// error instead of silently emitting truncated output.
 func TestPolicyStrictFunction_Err_MarshalFailsOnInfinity(t *testing.T) {
 	cat := fakeCatalog(t, map[string][]string{"s3": {"GetObject"}})
 	bf, _, err := big.ParseFloat("1e1000", 10, 53, big.ToNearestEven)
 	require.NoError(t, err)
 
 	// Use an aws:* key: the strict catalog accepts all aws-prefixed globals,
-	// so the condition-key check passes and we reach the json.Marshal step.
+	// so the condition-key check passes and we reach schema validation, where
+	// +Inf itself fails.
 	condInner, diags := basetypes.NewObjectValue(
 		map[string]attr.Type{"aws:EpochTime": basetypes.NumberType{}},
 		map[string]attr.Value{"aws:EpochTime": basetypes.NewNumberValue(bf)},
@@ -220,7 +221,7 @@ func TestPolicyStrictFunction_Err_MarshalFailsOnInfinity(t *testing.T) {
 
 	resp := runStrict(t, cat, policy)
 	require.NotNil(t, resp.Error)
-	assert.Contains(t, resp.Error.Error(), "encode IAM policy")
+	assert.Contains(t, resp.Error.Error(), "invalid IAM policy")
 }
 
 func TestPolicyStrictFunction_MetadataAndDefinition(t *testing.T) {
