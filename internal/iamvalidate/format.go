@@ -40,10 +40,14 @@ func formatError(v any, ve *jsonschema.ValidationError) string {
 }
 
 // resolvedLeaf is a ValidationError paired with the InstanceLocation to
-// report. The path is computed during traversal because some leaves (most
-// notably kind.PropertyNames) reset their own InstanceLocation to empty: the
-// library treats the property name as the instance, so we stitch the parent
-// location and the property name together.
+// report. The path is computed during traversal because kind.PropertyNames
+// leaves can't be trusted to carry their own InstanceLocation: jsonschema
+// v6.0.3's objValidate assigns it from an internal slice (vd.vloc) that's
+// shared across sibling property validations without cloning, so with Go's
+// randomized map iteration it can end up pointing at whichever sibling
+// property validated last instead of the property that actually failed. We
+// always stitch the parent location (threaded through our own traversal,
+// which isn't subject to that bug) and the property name together instead.
 type resolvedLeaf struct {
 	path  []string
 	err   *jsonschema.ValidationError
@@ -62,7 +66,7 @@ func collectLeaves(e *jsonschema.ValidationError, parentPath []string) []*resolv
 		effective = e.InstanceLocation
 	}
 	if pn, ok := e.ErrorKind.(*kind.PropertyNames); ok {
-		leafPath := append(append([]string(nil), effective...), pn.Property)
+		leafPath := append(append([]string(nil), parentPath...), pn.Property)
 		return []*resolvedLeaf{{path: leafPath, err: e, asKey: true}}
 	}
 	if len(e.Causes) == 0 {

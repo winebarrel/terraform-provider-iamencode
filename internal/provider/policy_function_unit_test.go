@@ -121,16 +121,16 @@ func TestRun_NoArguments(t *testing.T) {
 }
 
 // HCL lets users write huge literals like 1e1000. big.Float represents those
-// faithfully, but Float64() collapses them to +/-Inf, which json refuses. The
-// function must surface that as a function error rather than silently emit
-// truncated/empty output.
+// faithfully, but Float64() collapses them to +/-Inf. jsonschema now rejects
+// NaN/Inf during validation, so the function must surface that as a function
+// error rather than silently emit truncated/empty output.
 func TestRun_MarshalFailsOnInfinityNumber(t *testing.T) {
 	bf, _, err := big.ParseFloat("1e1000", 10, 53, big.ToNearestEven)
 	require.NoError(t, err)
 	require.True(t, math.IsInf(mustFloat(bf), 1), "setup: 1e1000 should collapse to +Inf")
 
-	// Wrap in a minimal policy shape so it survives schema validation: a Number
-	// inside Condition.NumericLessThan is structurally fine for the schema.
+	// Wrap in a minimal policy shape: a Number inside Condition.NumericLessThan
+	// is structurally fine for the schema, but +Inf itself fails validation.
 	condInner, diags := basetypes.NewObjectValue(
 		map[string]attr.Type{"k": basetypes.NumberType{}},
 		map[string]attr.Value{"k": basetypes.NewNumberValue(bf)},
@@ -168,7 +168,7 @@ func TestRun_MarshalFailsOnInfinityNumber(t *testing.T) {
 	resp := &function.RunResponse{Result: function.NewResultData(basetypes.NewStringNull())}
 	iamencodeprovider.PolicyFunction{}.Run(context.Background(), req, resp)
 	require.NotNil(t, resp.Error)
-	assert.Contains(t, resp.Error.Error(), "encode IAM policy")
+	assert.Contains(t, resp.Error.Error(), "invalid IAM policy")
 }
 
 func mustFloat(bf *big.Float) float64 {
