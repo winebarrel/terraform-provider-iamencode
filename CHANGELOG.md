@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.10.0] - 2026-08-14
+
+- Updated `jsonschema/v6` to v6.0.3. Numeric literals that overflow to `+Inf`/`-Inf` (e.g. `1e1000`) are now rejected during schema validation instead of at JSON encoding, so `policy` / `policy_strict` report "invalid IAM policy" instead of "encode IAM policy" for these.
+- Fixed validation error snippets occasionally pointing at the wrong property for an invalid condition operator key.
+
 ## [1.9.0] - 2026-07-02
 
 - `policy_strict`: retry transient service reference fetch failures (HTTP 429/5xx and network errors) up to 3 attempts with exponential backoff. Previously a single 503 failed the function immediately. Other 4xx statuses and malformed responses still fail on the first attempt.
